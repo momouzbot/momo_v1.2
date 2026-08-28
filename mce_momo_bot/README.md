@@ -205,12 +205,62 @@ tasdiqlanmagan botlar PAUSED holatiga o'tkaziladi va webhooki o'chiriladi.
 
    `GET /health` — server holatini tekshirish.
 
-## Webhook production'da
+## Railway'da deploy qilish
 
-Production serverda webhook manzili `BASE_WEBHOOK_URL` (masalan
-`https://domain.uz`) orqali quriladi va Nginx + SSL orqali FastAPI'ga
-proksi qilinadi (TZ 2.1-bo'lim). Har bir bot ro'yxatdan o'tganda
-`app/services/telegram.py::set_webhook()` chaqiriladi.
+Loyiha GitHub repo orqali Railway'ga ulanganda, quyidagi variables'larni
+Railway loyihasining **Variables** bo'limida qo'lda kiritish kerak:
+
+| O'zgaruvchi | Qiymat / izoh |
+|---|---|
+| `MOMO_BOT_TOKEN` | Asosiy Momo boshqaruv botining BotFather tokeni |
+| `TOKEN_ENCRYPTION_KEY` | Fernet kaliti — pastdagi buyruq bilan generatsiya qiling |
+| `BASE_WEBHOOK_URL` | Railway domeningiz, masalan `https://sizning-loyiha.up.railway.app` |
+| `WEBHOOK_PATH_PREFIX` | `/webhook` (default qiymat, o'zgartirish shart emas) |
+| `SCHEDULER_TIMEZONE` | `Asia/Tashkent` (default) |
+| `APP_ENV` | `production` |
+| `LOG_LEVEL` | `INFO` |
+
+**`TOKEN_ENCRYPTION_KEY` generatsiya qilish:**
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Natijani to'liq nusxalab, Railway Variables'ga `TOKEN_ENCRYPTION_KEY` sifatida qo'shing.
+
+### Avtomatik beriladigan o'zgaruvchilar (qo'lda kiritish shart emas)
+
+Agar Railway loyihasiga **PostgreSQL** va **Redis** plaginlarini qo'shsangiz
+(New → Database → Add PostgreSQL / Add Redis), Railway quyidagilarni
+avtomatik yaratadi va sizning servisingizga ulaydi:
+
+- `DATABASE_URL` — Railway buni `postgres://` sxemasida beradi; kod ichida
+  (`app/config.py`) avtomatik `postgresql+asyncpg://` ga aylantiriladi,
+  shuning uchun qo'lda tuzatish shart emas.
+- `REDIS_URL` — to'g'ridan-to'g'ri ishlatiladi, o'zgartirish shart emas.
+- `PORT` — Railway avtomatik beradi, `Procfile`/`railway.json` shu portni ishlatadi.
+
+Bu ikkita plagin ulanmagan bo'lsa, `DATABASE_URL` va `REDIS_URL`'ni qo'lda
+(masalan tashqi hosted Postgres/Redis manzili bilan) kiritishingiz kerak.
+
+### Deploy oqimi
+
+1. GitHub repo'ni Railway'ga ulang (New Project → Deploy from GitHub repo)
+2. PostgreSQL va Redis plaginlarini qo'shing (tavsiya etiladi)
+3. Yuqoridagi jadvaldagi o'zgaruvchilarni Variables bo'limiga kiriting
+4. Deploy tugagach, Railway bergan domenni oling va uni `BASE_WEBHOOK_URL`
+   ga qo'yib qayta deploy qiling (chunki webhook manzili shu domenga bog'liq)
+5. Birinchi deploy paytida `Procfile` avtomatik quyidagilarni bajaradi:
+   `alembic upgrade head` (migratsiyalar) → `python -m app.seed`
+   (tariffs/modules boshlang'ich ma'lumotlari) → `uvicorn` serverini ishga tushirish
+
+### Muhim eslatma: bitta instansiya
+
+`BotRegistry` xotirada saqlanadi (TZ 2.1-bo'lim izohi), shu sababli Railway
+servisi uchun **replicas=1** bo'lishi shart — bir nechta instansiya
+ishlatilsa, webhook so'rovlari turli instansiyalarga tushib, bot holati
+nomuvofiq bo'lib qolishi mumkin. Railway'da bu default holat, alohida
+sozlash shart emas.
 
 ## Hozirgi holat (skeleton bosqichi)
 
