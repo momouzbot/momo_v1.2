@@ -11,20 +11,28 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 
 revision: str = "0001_initial"
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-module_type_enum = sa.Enum(
+# MUHIM: postgresql.ENUM (generic sa.Enum EMAS) ishlatiladi va create_type=False
+# beriladi. Sabab: enum turlari upgrade() ichida qo'lda (checkfirst=True bilan)
+# yaratiladi; agar create_type=False bo'lmasa, op.create_table() chaqirilganda
+# SQLAlchemy shu ustunlar uchun CREATE TYPE'ni yana avtomatik chiqarishga
+# harakat qiladi (xuddi shu tranzaksiya ichida) — bu "type already exists"
+# xatosiga olib keladi. Generic sa.Enum'da create_type flag Postgres-native
+# turga to'g'ri uzatilmaydi, shu sababli aynan postgresql.ENUM ishlatilishi shart.
+module_type_enum = PGEnum(
     "admin", "support", "kino", "shop", "game_got", "game_mafia", "game_bunker", "custom",
-    name="module_type",
+    name="module_type", create_type=False,
 )
-tariff_code_enum = sa.Enum("start", "standard", "premium", name="tariff_code")
-bot_status_enum = sa.Enum("active", "paused", "suspended", "deleted", name="bot_status")
-payment_status_enum = sa.Enum("pending", "approved", "rejected", name="payment_status")
-payment_kind_enum = sa.Enum("hosting", "tariff_upgrade", name="payment_kind")
+tariff_code_enum = PGEnum("start", "standard", "premium", name="tariff_code", create_type=False)
+bot_status_enum = PGEnum("active", "paused", "suspended", "deleted", name="bot_status", create_type=False)
+payment_status_enum = PGEnum("pending", "approved", "rejected", name="payment_status", create_type=False)
+payment_kind_enum = PGEnum("hosting", "tariff_upgrade", name="payment_kind", create_type=False)
 
 
 def upgrade() -> None:
