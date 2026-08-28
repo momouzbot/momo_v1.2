@@ -9,14 +9,17 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 
 revision: str = "0002_appeals"
 down_revision: Union[str, None] = "0001_initial"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-appeal_status_enum = sa.Enum("new", "in_progress", "answered", "closed", name="appeal_status")
-appeal_category_enum = sa.Enum("technical", "financial", "general", name="appeal_category")
+# postgresql.ENUM + create_type=False — create_table() CREATE TYPE'ni yana
+# avtomatik chiqarmasligi uchun (0001_initial.py dagi izohga qarang).
+appeal_status_enum = PGEnum("new", "in_progress", "answered", "closed", name="appeal_status", create_type=False)
+appeal_category_enum = PGEnum("technical", "financial", "general", name="appeal_category", create_type=False)
 
 
 def upgrade() -> None:
