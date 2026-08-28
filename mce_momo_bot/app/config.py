@@ -5,6 +5,7 @@ qattiq (hardcode) qiymatlar yozilmaydi (TZ 6.1-bo'lim talabiga mos).
 """
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +32,22 @@ class Settings(BaseSettings):
 
     host: str = "0.0.0.0"
     port: int = 8000
+
+    @field_validator("database_url")
+    @classmethod
+    def _ensure_asyncpg_driver(cls, v: str) -> str:
+        """
+        Railway/Heroku kabi platformalar Postgres qo'shimchasini ulaganda
+        DATABASE_URL'ni odatda `postgres://` yoki `postgresql://` sxemasida
+        beradi — bizga esa async ishlash uchun `postgresql+asyncpg://` kerak.
+        Shu sababli avtomatik ravishda drayver nomi to'g'rilanadi, foydalanuvchi
+        Railway'da qo'lda o'zgartirishi shart emas.
+        """
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        if v.startswith("postgresql://"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     def webhook_url_for(self, bot_id: str) -> str:
         """Berilgan bot_id uchun to'liq webhook URL manzilini quradi."""
