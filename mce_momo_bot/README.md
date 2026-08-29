@@ -311,3 +311,4 @@ TZ 10-bo'limdagi amalga oshirish rejasiga muvofiq:
   saqlanmaydi — `TOKEN_ENCRYPTION_KEY` orqali shifrlanadi.
 - **Narxlar hardcode qilinmagan** — barcha tarif narxlari `tariffs`
   jadvalida saqlanadi (TZ 6.1-bo'lim talabi).
+     <!-- test: auto-deploy tekshiruvi -->
