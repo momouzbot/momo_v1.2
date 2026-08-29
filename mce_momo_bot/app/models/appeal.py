@@ -3,25 +3,17 @@ appeals — MurojaatModule uchun murojaatlar jadvali (TZ 4.2-bo'lim).
 """
 from __future__ import annotations
 
-import enum
-
 from sqlalchemy import BigInteger, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, IDMixin, TimestampMixin
+from app.models.base import AppealCategory, AppealStatus, Base, IDMixin, TimestampMixin
 
-
-class AppealStatus(str, enum.Enum):
-    NEW = "new"              # yangi, hali javob berilmagan
-    IN_PROGRESS = "in_progress"  # admin ko'rib chiqmoqda
-    ANSWERED = "answered"    # javob berilgan
-    CLOSED = "closed"        # yopilgan
-
-
-class AppealCategory(str, enum.Enum):
-    TECHNICAL = "technical"
-    FINANCIAL = "financial"
-    GENERAL = "general"
+# AppealStatus va AppealCategory endi app.models.base ichida aniqlangan
+# (type_annotation_map orqali PostgreSQL enum nomini to'g'ri bog'lash uchun),
+# shu sababli bu yerda faqat qayta eksport qilinadi — mavjud import
+# joylaridagi `from app.models.appeal import AppealStatus` kabi kodlar
+# buzilmasligi uchun.
+__all__ = ["Appeal", "AppealStatus", "AppealCategory"]
 
 
 class Appeal(Base, IDMixin, TimestampMixin):
