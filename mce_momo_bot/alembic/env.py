@@ -10,7 +10,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import settings
 from app.models import Base  # barcha modellarni import qiladi -> metadata to'liq bo'ladi
@@ -45,10 +45,20 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    # MUHIM: async_engine_from_config o'rniga to'g'ridan-to'g'ri create_async_engine
+    # ishlatiladi — shunda connect_args orqali asyncpg sozlamalarini berish mumkin.
+    # Railway kabi platformalarda PgBouncer/connection pooler bilan asyncpg'ning
+    # server-side prepared statement keshi ba'zan mos kelmay, ulanish/so'rov
+    # abadiy "osilib" qolishiga sabab bo'ladi (statement_cache_size=0 buni oldini
+    # oladi). `timeout` esa ulanish muammosi bo'lganda cheksiz kutish o'rniga
+    # tushunarli xato chiqarish uchun.
+    connectable = create_async_engine(
+        settings.database_url,
         poolclass=pool.NullPool,
+        connect_args={
+            "statement_cache_size": 0,
+            "timeout": 15,
+        },
     )
 
     async with connectable.connect() as connection:
