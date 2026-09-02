@@ -52,6 +52,7 @@ async def run_migrations_online() -> None:
     # abadiy "osilib" qolishiga sabab bo'ladi (statement_cache_size=0 buni oldini
     # oladi). `timeout` esa ulanish muammosi bo'lganda cheksiz kutish o'rniga
     # tushunarli xato chiqarish uchun.
+    print("[MIGRATION-DEBUG] Engine yaratilmoqda...", flush=True)
     connectable = create_async_engine(
         settings.database_url,
         poolclass=pool.NullPool,
@@ -60,11 +61,24 @@ async def run_migrations_online() -> None:
             "timeout": 15,
         },
     )
+    print("[MIGRATION-DEBUG] Engine yaratildi. Ulanish ochilmoqda...", flush=True)
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+    try:
+        async with asyncio.timeout(30):
+            async with connectable.connect() as connection:
+                print("[MIGRATION-DEBUG] Ulanish OCHILDI. Migratsiya ishga tushmoqda...", flush=True)
+                await connection.run_sync(do_run_migrations)
+                print("[MIGRATION-DEBUG] Migratsiya TUGADI.", flush=True)
+    except TimeoutError:
+        print("[MIGRATION-DEBUG] XATO: 30 soniyada tugamadi — TIMEOUT!", flush=True)
+        raise
+    except Exception as exc:
+        print(f"[MIGRATION-DEBUG] XATO: {type(exc).__name__}: {exc}", flush=True)
+        raise
 
+    print("[MIGRATION-DEBUG] Engine yopilmoqda...", flush=True)
     await connectable.dispose()
+    print("[MIGRATION-DEBUG] Hammasi tugadi.", flush=True)
 
 
 if context.is_offline_mode():
