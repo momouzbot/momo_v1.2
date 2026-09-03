@@ -59,20 +59,33 @@ MODULES = [
 
 
 async def seed() -> None:
+    print("[SEED-DEBUG] Boshlandi. Session ochilmoqda...", flush=True)
     async with AsyncSessionLocal() as session:
+        print("[SEED-DEBUG] Session ochildi. Tariffs tekshirilmoqda...", flush=True)
         for data in TARIFFS:
             existing = await session.execute(select(Tariff).where(Tariff.code == data["code"]))
             if existing.scalar_one_or_none() is None:
                 session.add(Tariff(**data))
 
+        print("[SEED-DEBUG] Tariffs tayyor. Modules tekshirilmoqda...", flush=True)
         for code, name, description, is_active in MODULES:
             existing = await session.execute(select(Module).where(Module.code == code))
             if existing.scalar_one_or_none() is None:
                 session.add(Module(code=code, name=name, description=description, is_active=is_active))
 
+        print("[SEED-DEBUG] Commit qilinmoqda...", flush=True)
         await session.commit()
-    print("Seed muvaffaqiyatli yakunlandi: tariffs + modules.")
+    print("[SEED-DEBUG] Session yopildi. Seed muvaffaqiyatli yakunlandi: tariffs + modules.", flush=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(seed())
+    print("[SEED-DEBUG] python -m app.seed ishga tushdi.", flush=True)
+    try:
+        asyncio.run(asyncio.wait_for(seed(), timeout=30))
+    except TimeoutError:
+        print("[SEED-DEBUG] XATO: 30 soniyada tugamadi — TIMEOUT!", flush=True)
+        raise
+    except Exception as exc:
+        print(f"[SEED-DEBUG] XATO: {type(exc).__name__}: {exc}", flush=True)
+        raise
+    print("[SEED-DEBUG] Skript to'liq tugadi, chiqilmoqda.", flush=True)
