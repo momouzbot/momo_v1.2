@@ -26,15 +26,20 @@ from app.api.external_bots import router as external_bots_router
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
 
+print("[MAIN-DEBUG] app/main.py fayli import qilindi.", flush=True)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print("[MAIN-DEBUG] Lifespan boshlandi. Scheduler ishga tushirilmoqda...", flush=True)
     start_scheduler()
+    print("[MAIN-DEBUG] Scheduler ishga tushdi. Ilova tayyor.", flush=True)
     logger.info("MCE Momo Bot dispatcher ishga tushdi (env=%s)", settings.app_env)
     yield
     shutdown_scheduler()
 
 
+print("[MAIN-DEBUG] FastAPI ilova obyekti yaratilmoqda...", flush=True)
 app = FastAPI(title="MCE Momo Bot — Multi-bot Webhook Dispatcher", lifespan=lifespan)
 app.include_router(registration_router)
 app.include_router(payments_router)
@@ -68,6 +73,3 @@ async def telegram_webhook(bot_id: int, request: Request) -> dict:
 
     # Telegramga har doim 200 qaytariladi — aks holda webhook qayta yuborishga urinadi.
     return {"ok": True}
-
-
-
