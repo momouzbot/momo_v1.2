@@ -1,112 +1,54 @@
 """
-Bot ro'yxatdan o'tkazish — qayta ishlatiladigan biznes logika.
+Ro'yxatdan o'tish (registration) HTTP API — TZ 5-bo'lim.
 
-Bu funksiya ikki joyda ishlatiladi:
-    1. HTTP API (`app/api/registration.py`) — tashqi integratsiyalar uchun
-    2. Momo bot suhbat oqimi (`app/momo_bot.py`) — mijoz Telegram orqali
-       to'g'ridan-to'g'ri shu yerda o'zining botini ro'yxatdan o'tkazadi
-       (TZ 5-bo'lim: asosiy, kutilgan foydalanuvchi tajribasi)
+Asosiy biznes logika `app/services/registration.py` da; bu yerda faqat
+HTTP darajasidagi xato-kodlarga o'tkazish bor. Asosiy foydalanuvchi
+tajribasi — Momo bot suhbat oqimi (`app/momo_bot.py`); bu API tashqi
+integratsiyalar (masalan admin panel, boshqa xizmatlar) uchun.
 """
 from __future__ import annotations
 
-import datetime
-import logging
-import secrets
+from fastapi import APIRouter, HTTPException
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.api.schemas import RegisterBotRequest, RegisterBotResponse
+from app.database import AsyncSessionLocal
+from app.models.base import TariffCode
+from app.services.limits import LimitExceededError
+from app.services.registration import AlreadyRegisteredError, register_bot_for_owner
+from app.services.telegram import InvalidTokenError
 
-from app.models.base import BotStatus, ModuleType, TariffCode
-from app.models.bot import Bot as BotModel
-from app.models.bot import BotTariff
-from app.services.crypto import encrypt_token
-from app.services.limits import LimitExceededError, check_bot_limit, get_tariff_by_code
-from app.services.telegram import InvalidTokenError, set_webhook, validate_token
-from app.services.users import get_or_create_user
-
-logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/registration", tags=["registration"])
 
 
-class AlreadyRegisteredError(Exception):
-    """Bu bot allaqachon ro'yxatdan o'tgan."""
-
-
-async def register_bot_for_owner(
-    session: AsyncSession,
-    *,
-    owner_telegram_id: int,
-    owner_username: str | None,
-    owner_full_name: str | None,
-    bot_token: str,
-    module_type: ModuleType,
-    externally_hosted: bool = False,
-) -> tuple[BotModel, str | None]:
-    """
-    To'liq ro'yxatdan o'tkazish oqimi (TZ 5-bo'lim).
-
-    Qaytaradi: (bot_row, external_api_key). external_api_key faqat
-    externally_hosted=True bo'lganda qiymatga ega, aks holda None.
-
-    Xatoliklar:
-        InvalidTokenError    — token noto'g'ri
-        AlreadyRegisteredError — bot allaqachon ro'yxatdan o'tgan
-        LimitExceededError   — bot limiti tugagan
-    """
-    # --- 1. Token validatsiyasi ---
-    me = await validate_token(bot_token)  # InvalidTokenError ko'tarilishi mumkin
-
-    # --- Bot allaqachon ro'yxatdan o'tganmi? ---
-    existing = await session.execute(select(BotModel).where(BotModel.telegram_bot_id == me.bot_id))
-    if existing.scalar_one_or_none() is not None:
-        raise AlreadyRegisteredError(f"Bu bot allaqachon ro'yxatdan o'tgan: {me.username}")
-
-    # --- 2. Mijozni topish/yaratish ---
-    user = await get_or_create_user(
-        session, telegram_id=owner_telegram_id, username=owner_username, full_name=owner_full_name
-    )
-
-    # --- 3-4. Start tarifi va bot limiti tekshiruvi ---
-    start_tariff = await get_tariff_by_code(session, TariffCode.START)
-    await check_bot_limit(session, owner_id=user.id, tariff=start_tariff)  # LimitExceededError
-
-    # --- 5. Bot yozuvini yaratish ---
-    external_api_key = secrets.token_urlsafe(32) if externally_hosted else None
-
-    bot_row = BotModel(
-        owner_id=user.id,
-        telegram_bot_id=me.bot_id,
-        username=me.username,
-        token_encrypted=encrypt_token(bot_token),
-        module_type=module_type,
-        status=BotStatus.ACTIVE,
-        webhook_set=False,
-        is_externally_hosted=externally_hosted,
-        external_api_key=external_api_key,
-    )
-    session.add(bot_row)
-    await session.flush()
-
-    session.add(
-        BotTariff(
-            bot_id=bot_row.id,
-            tariff_code=TariffCode.START,
-            started_at=datetime.date.today(),
-            expires_at=None,
-            is_active=True,
-        )
-    )
-
-    # --- 6. Webhook o'rnatish (faqat Momo hostinglaydigan botlar uchun) ---
-    if not externally_hosted:
+@router.post("/register", response_model=RegisterBotResponse)
+async def register_bot(payload: RegisterBotRequest) -> RegisterBotResponse:
+    async with AsyncSessionLocal() as session:
         try:
-            await set_webhook(bot_token, me.bot_id)
-            bot_row.webhook_set = True
-        except Exception as exc:
-            logger.warning("Webhook o'rnatilmadi: bot_id=%s xato=%s", me.bot_id, exc)
-    else:
-        logger.info("Tashqi hostingdagi bot ro'yxatdan o'tdi: bot_id=%s", me.bot_id)
+            bot_row, external_api_key = await register_bot_for_owner(
+                session,
+                owner_telegram_id=payload.owner_telegram_id,
+                owner_username=payload.owner_username,
+                owner_full_name=payload.owner_full_name,
+                bot_token=payload.bot_token,
+                module_type=payload.module_type,
+                externally_hosted=payload.externally_hosted,
+            )
+        except InvalidTokenError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except AlreadyRegisteredError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except LimitExceededError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    await session.commit()
-    await session.refresh(bot_row)
-
-    return bot_row, external_api_key
+        return RegisterBotResponse(
+            bot_id=bot_row.id,
+            telegram_bot_id=bot_row.telegram_bot_id,
+            username=bot_row.username,
+            module_type=bot_row.module_type,
+            status=bot_row.status,
+            tariff_code=TariffCode.START,
+            tariff_expires_at=None,
+            webhook_set=bot_row.webhook_set,
+            is_externally_hosted=bot_row.is_externally_hosted,
+            external_api_key=external_api_key,
+        )
