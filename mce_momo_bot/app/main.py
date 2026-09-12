@@ -9,12 +9,14 @@ bot_id bo'yicha yo'naltirish" — shu fayl aynan shu vazifani bajaradi.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import subprocess
 from contextlib import asynccontextmanager
 
 from aiogram import Bot as AiogramBot
 from aiogram.types import Update
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 
 from app.config import settings
 from app.database import AsyncSessionLocal
@@ -36,9 +38,55 @@ momo_aiogram_bot: AiogramBot | None = None
 momo_dispatcher = None
 
 
+async def _run_migrations_and_seed() -> None:
+    """
+    Migratsiya va seed'ni ilovaning O'ZI ishga tushirganda avtomatik bajaradi.
+
+    MUHIM: Railway'ning "Pre-Deploy Command" maydoniga tayanmaymiz — u
+    amalda saqlanmasligi yoki e'tiborsiz qolib ketishi kuzatildi (bir necha
+    marta modullar/tariflar seed qilinmay qolgan holatlar). Shu sababli
+    migratsiya+seed endi ilovaning o'z ishga tushish (lifespan) bosqichida,
+    HAR SAFAR avtomatik ishlaydi — Railway UI sozlamasidan mustaqil.
+
+    `alembic` alohida jarayon (subprocess) sifatida chaqiriladi, chunki
+    alembic/env.py ichida `asyncio.run(...)` bor — buni to'g'ridan-to'g'ri
+    (import qilib) shu event loop ichida chaqirish "asyncio.run() cannot be
+    called from a running event loop" xatosiga olib keladi. Shuningdek,
+    subprocess.run bloklovchi (sync) chaqiruv bo'lgani uchun asosiy event
+    loop'ni to'xtatib qo'ymasligi uchun alohida thread'da ishga tushiriladi.
+    """
+    logger.info("Migratsiya boshlanmoqda (alembic upgrade head)...")
+    result = await asyncio.to_thread(
+        subprocess.run,
+        ["alembic", "upgrade", "head"],
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout:
+        logger.info("alembic stdout:\n%s", result.stdout)
+    if result.returncode != 0:
+        logger.error("alembic stderr:\n%s", result.stderr)
+        raise RuntimeError(f"Migratsiya muvaffaqiyatsiz tugadi (exit={result.returncode})")
+    logger.info("Migratsiya muvaffaqiyatli tugadi.")
+
+    logger.info("Seed boshlanmoqda (tariffs + modules)...")
+    from app.seed import seed
+
+    await seed()
+    logger.info("Seed muvaffaqiyatli tugadi.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global momo_aiogram_bot, momo_dispatcher
+
+    try:
+        await _run_migrations_and_seed()
+    except Exception:
+        logger.exception(
+            "Migratsiya/seed bosqichida xatolik — ilova baribir ishga tushadi, "
+            "lekin DB sxemasi/ma'lumotlari to'liq bo'lmasligi mumkin."
+        )
 
     start_scheduler()
 
