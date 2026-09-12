@@ -1,14 +1,12 @@
 """
-Momo bot — asosiy boshqaruv boti (TZ 5-bo'lim).
+Momo bot — asosiy boshqaruv boti (TZ 5-bo'lim + 8-bo'lim: Momo Admin roli).
 
-Bu — mijozlar bevosita Telegram orqali gaplashadigan yagona bot. Oqim:
-    /start -> yo'riqnoma
-    mijoz bot tokenini yuboradi -> validatsiya
-    modul turini tanlaydi (faqat is_active=True bo'lganlar ko'rsatiladi) -> tugma
-    -> avtomatik ro'yxatdan o'tkaziladi, webhook o'rnatiladi, natija xabar qilinadi
+Oddiy mijoz uchun:
+    /start, /newbot -> token yuborish -> modul tanlash -> bot avtomatik tayyor
+    /mybots -> mijozning botlari ro'yxati
 
-Bu HTTP API'dan (`/api/registration/register`) farqli — mijoz uchun asosiy,
-kutilgan tajriba shu: token yubordi, tugmani bosdi, boti tayyor.
+Momo Admin uchun (faqat is_momo_admin=True bo'lganlar ko'radi):
+    /admin -> barcha modullar ro'yxati, har birini yoqish/o'chirish tugmasi
 """
 from __future__ import annotations
 
@@ -28,8 +26,10 @@ from app.models.base import ModuleType
 from app.models.bot import Bot as BotModel
 from app.models.module import Module
 from app.services.limits import LimitExceededError
+from app.services.modules import list_modules, set_module_active
 from app.services.registration import AlreadyRegisteredError, register_bot_for_owner
 from app.services.telegram import InvalidTokenError
+from app.services.users import get_or_create_user
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +50,39 @@ class RegisterStates(StatesGroup):
     waiting_for_module = State()
 
 
+def _admin_modules_keyboard(modules: list[Module]):
+    builder = InlineKeyboardBuilder()
+    for module in modules:
+        status_icon = "✅" if module.is_active else "❌"
+        label = _MODULE_LABELS.get(module.code, module.name)
+        builder.button(text=f"{status_icon} {label}", callback_data=f"admin_toggle:{module.code.value}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def build_momo_dispatcher() -> Dispatcher:
     dp = Dispatcher()
     dp.update.middleware(DBSessionMiddleware())
 
     router = Router(name="momo_main")
 
+    # -----------------------------------------------------------------
+    # Oddiy mijoz oqimi
+    # -----------------------------------------------------------------
+
     @router.message(CommandStart())
-    async def cmd_start(message: Message, state: FSMContext) -> None:
+    async def cmd_start(message: Message, state: FSMContext, session: AsyncSession) -> None:
         await state.clear()
+        # get_or_create_user shu yerda chaqiriladi — shu bilan birga
+        # super_admin_telegram_id mos kelsa, avtomatik admin qilib belgilaydi.
+        await get_or_create_user(
+            session,
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            full_name=message.from_user.full_name,
+        )
+        await session.commit()
+
         await message.answer(
             "Assalomu alaykum! Men Momo, siz uchun Telegram-bot yarataman.\n\n"
             "Yangi bot yaratish uchun:\n"
@@ -76,9 +100,9 @@ def build_momo_dispatcher() -> Dispatcher:
 
     @router.message(Command("mybots"))
     async def cmd_mybots(message: Message, session: AsyncSession) -> None:
-        from app.services.users import get_or_create_user
-
         user = await get_or_create_user(session, telegram_id=message.from_user.id)
+        await session.commit()
+
         result = await session.execute(select(BotModel).where(BotModel.owner_id == user.id))
         bots = result.scalars().all()
 
@@ -95,7 +119,7 @@ def build_momo_dispatcher() -> Dispatcher:
         await message.answer("\n".join(lines))
 
     @router.message(RegisterStates.waiting_for_token)
-    async def on_token_received(message: Message, state: FSMContext) -> None:
+    async def on_token_received(message: Message, state: FSMContext, session: AsyncSession) -> None:
         token = (message.text or "").strip()
         if ":" not in token or len(token) < 20:
             await message.answer(
@@ -106,13 +130,10 @@ def build_momo_dispatcher() -> Dispatcher:
 
         await state.update_data(bot_token=token)
 
-        from app.database import AsyncSessionLocal
-
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(Module).where(Module.is_active.is_(True)).order_by(Module.code)
-            )
-            active_modules = result.scalars().all()
+        result = await session.execute(
+            select(Module).where(Module.is_active.is_(True)).order_by(Module.code)
+        )
+        active_modules = result.scalars().all()
 
         if not active_modules:
             await message.answer("Hozircha mavjud modullar yo'q. Birozdan keyin urinib ko'ring.")
@@ -181,11 +202,64 @@ def build_momo_dispatcher() -> Dispatcher:
         )
         await state.clear()
 
+    # -----------------------------------------------------------------
+    # Momo Admin oqimi (TZ 8-bo'lim)
+    # -----------------------------------------------------------------
+
+    @router.message(Command("admin"))
+    async def cmd_admin(message: Message, session: AsyncSession) -> None:
+        user = await get_or_create_user(session, telegram_id=message.from_user.id)
+        await session.commit()
+
+        if not user.is_momo_admin:
+            await message.answer("Bu buyruq faqat Momo Admin uchun.")
+            return
+
+        modules = await list_modules(session)
+        if not modules:
+            await message.answer("Modullar ro'yxati bo'sh (seed ishga tushmagan bo'lishi mumkin).")
+            return
+
+        await message.answer(
+            "Modullarni boshqarish. Bosilgan modul yoqiladi/o'chiriladi:\n"
+            "(✅ = yoqilgan, foydalanuvchilarga ko'rinadi, ❌ = o'chirilgan)",
+            reply_markup=_admin_modules_keyboard(modules),
+        )
+
+    @router.callback_query(F.data.startswith("admin_toggle:"))
+    async def on_admin_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+        user = await get_or_create_user(session, telegram_id=callback.from_user.id)
+        await session.commit()
+
+        if not user.is_momo_admin:
+            await callback.answer("Bu amal faqat Momo Admin uchun.", show_alert=True)
+            return
+
+        module_value = callback.data.split(":", 1)[1]
+        module_type = ModuleType(module_value)
+
+        modules = await list_modules(session)
+        current = next((m for m in modules if m.code == module_type), None)
+        if current is None:
+            await callback.answer("Modul topilmadi.", show_alert=True)
+            return
+
+        updated = await set_module_active(session, module_type, not current.is_active)
+        modules = await list_modules(session)
+
+        state_text = "yoqildi" if updated.is_active else "o'chirildi"
+        await callback.answer(f"{_MODULE_LABELS.get(module_type, module_type.value)} {state_text}.")
+        await callback.message.edit_reply_markup(reply_markup=_admin_modules_keyboard(modules))
+
+    # -----------------------------------------------------------------
+
     @router.message()
     async def fallback(message: Message, state: FSMContext) -> None:
         current_state = await state.get_state()
         if current_state is None:
-            await message.answer("Yangi bot yaratish uchun /newbot, botlaringizni ko'rish uchun /mybots yuboring.")
+            await message.answer(
+                "Yangi bot yaratish uchun /newbot, botlaringizni ko'rish uchun /mybots yuboring."
+            )
 
     dp.include_router(router)
     return dp
