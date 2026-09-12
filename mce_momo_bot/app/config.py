@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     # o'zgaruvchini bilasiz — boshqa hech kim o'zini admin qila olmaydi.
     super_admin_telegram_id: int | None = None
 
+    # Qo'shimcha xavfsizlik qatlami: /admin panelini ochishda so'raladigan
+    # maxfiy PIN kod. Railway Variables'da ADMIN_PIN sifatida saqlanadi va
+    # kodning hech bir joyida hardcode qilinmaydi. Bo'sh qoldirilsa (default),
+    # PIN so'ralmaydi — faqat is_momo_admin tekshiruvi bilan cheklanadi
+    # (orqaga muvofiqlik uchun), lekin ishlab chiqarishda to'ldirish tavsiya etiladi.
+    admin_pin: str = ""
+
     host: str = "0.0.0.0"
     port: int = 8000
 
