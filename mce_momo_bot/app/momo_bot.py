@@ -39,6 +39,7 @@ from app.dispatcher.middleware import DBSessionMiddleware
 from app.models.base import BotStatus, ModuleType, PaymentStatus, TariffCode
 from app.models.bot import Bot as BotModel
 from app.models.module import Module
+from app.models.payment import Payment
 from app.models.tariff import Tariff
 from app.models.user import User
 from app.services.limits import (
@@ -52,11 +53,20 @@ from app.services.limits import (
 from app.services.modules import list_modules, set_module_active
 from app.services.payments import (
     HostingPaymentAlreadyExistsError,
+    NotAuthorizedError,
+    PaymentNotFoundError,
+    approve_payment,
+    get_payment_amount_and_label,
+    get_payment_with_context,
     hosting_payment_status_this_month,
+    list_pending_payments,
+    reject_payment,
     submit_hosting_payment,
     submit_tariff_upgrade,
 )
 from app.services.registration import AlreadyRegisteredError, register_bot_for_owner
+from app.services.stats import get_platform_stats
+from app.services.tariffs import TARIFF_FIELDS, InvalidTariffFieldError, update_tariff_field
 from app.services.telegram import InvalidTokenError
 from app.services.users import complete_registration, get_or_create_user
 
@@ -112,6 +122,18 @@ class PaymentStates(StatesGroup):
     waiting_for_upgrade_receipt = State()
 
 
+class AdminPaymentStates(StatesGroup):
+    """Admin panel — to'lovni rad etish sababini kiritish oqimi."""
+
+    waiting_for_rejection_reason = State()
+
+
+class AdminTariffStates(StatesGroup):
+    """Admin panel — ta'rif maydonini tahrirlash oqimi."""
+
+    waiting_for_field_value = State()
+
+
 # -----------------------------------------------------------------
 # Klaviatura yordamchilari
 # -----------------------------------------------------------------
@@ -138,6 +160,55 @@ def _admin_modules_keyboard(modules: list[Module]):
         status_icon = "✅" if module.is_active else "❌"
         label = _MODULE_LABELS.get(module.code, module.name)
         builder.button(text=f"{status_icon} {label}", callback_data=f"admin_toggle:{module.code.value}")
+    builder.button(text="⬅️ Orqaga", callback_data="admin_menu:back")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def _admin_main_menu_keyboard(pending_count: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🧩 Modullar", callback_data="admin_menu:modules")
+    payments_label = f"💳 To'lovlar ({pending_count} ta kutilmoqda)" if pending_count else "💳 To'lovlar"
+    builder.button(text=payments_label, callback_data="admin_menu:payments")
+    builder.button(text="💰 Ta'riflar", callback_data="admin_menu:tariffs")
+    builder.button(text="📊 Statistika", callback_data="admin_menu:stats")
+    builder.button(text="✖️ Yopish", callback_data="admin_menu:close")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def _admin_payments_list_keyboard(payments_info: list[tuple[Payment, float, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for payment, amount, label in payments_info:
+        builder.button(text=f"#{payment.id} — {label} — {int(amount)} so'm", callback_data=f"payment_view:{payment.id}")
+    builder.button(text="⬅️ Orqaga", callback_data="admin_menu:back")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def _payment_detail_keyboard(payment_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Tasdiqlash", callback_data=f"payment_approve:{payment_id}")
+    builder.button(text="❌ Rad etish", callback_data=f"payment_reject:{payment_id}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def _admin_tariffs_list_keyboard(tariffs: list[Tariff]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for t in tariffs:
+        hint = "bepul" if t.code == TariffCode.START else f"{int(t.base_hosting_price)} so'm/oy"
+        builder.button(text=f"{t.name} — {hint}", callback_data=f"admin_tariff_view:{t.code.value}")
+    builder.button(text="⬅️ Orqaga", callback_data="admin_menu:back")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def _admin_tariff_detail_keyboard(code: TariffCode) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for field_name, meta in TARIFF_FIELDS.items():
+        builder.button(text=f"✏️ {meta['label']}", callback_data=f"admin_tariff_edit:{code.value}:{field_name}")
+    builder.button(text="⬅️ Orqaga", callback_data="admin_menu:tariffs")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -663,14 +734,16 @@ def build_momo_dispatcher() -> Dispatcher:
             PaymentStates.waiting_for_hosting_receipt,
             PaymentStates.waiting_for_upgrade_tariff,
             PaymentStates.waiting_for_upgrade_receipt,
+            AdminPaymentStates.waiting_for_rejection_reason,
+            AdminTariffStates.waiting_for_field_value,
         ),
         F.text.startswith("/") | F.text.in_(_RESERVED_MENU_TEXTS),
     )
     async def on_command_while_waiting_payment(message: Message, state: FSMContext) -> None:
-        """To'lov oqimida (chek kutish/tarif tanlash) boshqa buyruq/menyu tugmasi
-        bosilsa — oqim bekor qilinadi, buyruq oddiy tarzda bajariladi."""
+        """To'lov yoki admin tahrirlash oqimida (chek kutish/tarif tanlash/qiymat
+        kiritish) boshqa buyruq/menyu tugmasi bosilsa — oqim bekor qilinadi."""
         await state.clear()
-        await message.answer("Amal bekor qilindi. Qaytadan boshlash uchun bot kartasini oching.")
+        await message.answer("Amal bekor qilindi. Qaytadan boshlash uchun tegishli bo'limni qayta oching.")
 
     async def _start_new_bot_flow(message: Message, state: FSMContext, session: AsyncSession) -> None:
         user = await get_or_create_user(session, telegram_id=message.from_user.id)
@@ -724,16 +797,11 @@ def build_momo_dispatcher() -> Dispatcher:
     # ro'yxatdan o'tish tartibida tekshiradi).
     # -----------------------------------------------------------------
 
-    async def _send_admin_panel(message: Message, session: AsyncSession) -> None:
-        modules = await list_modules(session)
-        if not modules:
-            await message.answer("Modullar ro'yxati bo'sh (seed ishga tushmagan bo'lishi mumkin).")
-            return
-
+    async def _send_admin_main_menu(message: Message, session: AsyncSession) -> None:
+        pending_count = len(await list_pending_payments(session))
         await message.answer(
-            "Modullarni boshqarish. Bosilgan modul yoqiladi/o'chiriladi:\n"
-            "(✅ = yoqilgan, foydalanuvchilarga ko'rinadi, ❌ = o'chirilgan)",
-            reply_markup=_admin_modules_keyboard(modules),
+            "⚙️ Admin panel. Bo'limni tanlang:",
+            reply_markup=_admin_main_menu_keyboard(pending_count),
         )
 
     async def _open_admin_panel(message: Message, state: FSMContext, session: AsyncSession) -> None:
@@ -749,7 +817,7 @@ def build_momo_dispatcher() -> Dispatcher:
 
         if not settings.admin_pin:
             logger.warning("ADMIN_PIN sozlanmagan — /admin paneli PIN'siz ochildi.")
-            await _send_admin_panel(message, session)
+            await _send_admin_main_menu(message, session)
             return
 
         await state.set_state(AdminStates.waiting_for_pin)
@@ -783,7 +851,7 @@ def build_momo_dispatcher() -> Dispatcher:
             await message.answer("Noto'g'ri PIN. Qaytadan urinish uchun /admin yuboring.")
             return
 
-        await _send_admin_panel(message, session)
+        await _send_admin_main_menu(message, session)
 
     @router.message(NewBotStates.waiting_for_token, F.text.startswith("/") | F.text.in_(_RESERVED_MENU_TEXTS))
     async def on_command_while_waiting_token(message: Message, state: FSMContext) -> None:
@@ -883,16 +951,55 @@ def build_momo_dispatcher() -> Dispatcher:
         await state.clear()
 
     # -----------------------------------------------------------------
-    # Momo Admin: modul yoqish/o'chirish tugmasi (callback)
+    # Momo Admin: asosiy menyu navigatsiyasi (Modullar/To'lovlar/Ta'riflar/Statistika)
     # -----------------------------------------------------------------
+
+    async def _require_momo_admin(callback: CallbackQuery, session: AsyncSession) -> User | None:
+        user = await get_or_create_user(session, telegram_id=callback.from_user.id)
+        await session.commit()
+        if not user.is_momo_admin:
+            await callback.answer("Bu amal faqat Momo Admin uchun.", show_alert=True)
+            return None
+        return user
+
+    @router.callback_query(F.data == "admin_menu:back")
+    async def on_admin_menu_back(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+        await state.clear()
+        pending_count = len(await list_pending_payments(session))
+        await callback.message.edit_text(
+            "⚙️ Admin panel. Bo'limni tanlang:",
+            reply_markup=_admin_main_menu_keyboard(pending_count),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "admin_menu:close")
+    async def on_admin_menu_close(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        await callback.message.edit_text("Admin panel yopildi. Qaytadan ochish uchun /admin yuboring.")
+        await callback.answer()
+
+    @router.callback_query(F.data == "admin_menu:modules")
+    async def on_admin_menu_modules(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+        await state.clear()
+        modules = await list_modules(session)
+        if not modules:
+            await callback.message.edit_text("Modullar ro'yxati bo'sh (seed ishga tushmagan bo'lishi mumkin).")
+            await callback.answer()
+            return
+        await callback.message.edit_text(
+            "Modullarni boshqarish. Bosilgan modul yoqiladi/o'chiriladi:\n"
+            "(✅ = yoqilgan, foydalanuvchilarga ko'rinadi, ❌ = o'chirilgan)",
+            reply_markup=_admin_modules_keyboard(modules),
+        )
+        await callback.answer()
 
     @router.callback_query(F.data.startswith("admin_toggle:"))
     async def on_admin_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
-        user = await get_or_create_user(session, telegram_id=callback.from_user.id)
-        await session.commit()
-
-        if not user.is_momo_admin:
-            await callback.answer("Bu amal faqat Momo Admin uchun.", show_alert=True)
+        if await _require_momo_admin(callback, session) is None:
             return
 
         module_value = callback.data.split(":", 1)[1]
@@ -910,6 +1017,247 @@ def build_momo_dispatcher() -> Dispatcher:
         state_text = "yoqildi" if updated.is_active else "o'chirildi"
         await callback.answer(f"{_MODULE_LABELS.get(module_type, module_type.value)} {state_text}.")
         await callback.message.edit_reply_markup(reply_markup=_admin_modules_keyboard(modules))
+
+    # -----------------------------------------------------------------
+    # Momo Admin: 💳 To'lovlar — kutilayotgan cheklarni ko'rish, tasdiqlash/rad etish
+    # -----------------------------------------------------------------
+
+    @router.callback_query(F.data == "admin_menu:payments")
+    async def on_admin_menu_payments(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+        await state.clear()
+
+        pending = await list_pending_payments(session)
+        if not pending:
+            kb = InlineKeyboardBuilder()
+            kb.button(text="⬅️ Orqaga", callback_data="admin_menu:back")
+            kb.adjust(1)
+            await callback.message.edit_text("Hozircha kutilayotgan to'lovlar yo'q.", reply_markup=kb.as_markup())
+            await callback.answer()
+            return
+
+        infos = [(p, *(await get_payment_amount_and_label(session, p))) for p in pending]
+        await callback.message.edit_text(
+            "Kutilayotgan to'lovlar. Batafsil ko'rish uchun bosing:",
+            reply_markup=_admin_payments_list_keyboard(infos),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("payment_view:"))
+    async def on_payment_view(callback: CallbackQuery, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+
+        payment_id = int(callback.data.split(":", 1)[1])
+        try:
+            payment, bot_row, owner = await get_payment_with_context(session, payment_id)
+        except PaymentNotFoundError:
+            await callback.answer("To'lov topilmadi.", show_alert=True)
+            return
+
+        if payment.status != PaymentStatus.PENDING:
+            await callback.answer("Bu to'lov allaqachon ko'rib chiqilgan.", show_alert=True)
+            return
+
+        amount, label = await get_payment_amount_and_label(session, payment)
+        caption = (
+            f"#{payment.id} — {label}\n\n"
+            f"Bot: @{bot_row.username}\n"
+            f"Mijoz: {owner.full_name or '—'} ({owner.phone_number or '—'})\n"
+            f"Summa: {int(amount)} so'm"
+        )
+        await callback.message.answer_photo(
+            payment.receipt_file_id, caption=caption, reply_markup=_payment_detail_keyboard(payment.id)
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("payment_approve:"))
+    async def on_payment_approve(callback: CallbackQuery, session: AsyncSession, bot: AiogramBot) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+
+        payment_id = int(callback.data.split(":", 1)[1])
+        try:
+            payment = await approve_payment(session, payment_id, callback.from_user.id)
+        except PaymentNotFoundError:
+            await callback.answer("To'lov topilmadi.", show_alert=True)
+            return
+        except NotAuthorizedError:
+            await callback.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        except ValueError as exc:
+            await callback.answer(str(exc), show_alert=True)
+            return
+
+        amount, label = await get_payment_amount_and_label(session, payment)
+        bot_result = await session.execute(select(BotModel).where(BotModel.id == payment.bot_id))
+        bot_row = bot_result.scalar_one_or_none()
+        if bot_row is not None:
+            owner_result = await session.execute(select(User).where(User.id == bot_row.owner_id))
+            owner = owner_result.scalar_one_or_none()
+            if owner is not None:
+                try:
+                    await bot.send_message(
+                        owner.telegram_id,
+                        f"✅ To'lovingiz tasdiqlandi!\n{label} — {int(amount)} so'm.\n@{bot_row.username}",
+                    )
+                except Exception:
+                    logger.exception("Mijozga to'lov tasdiqlangani haqida xabar yuborishda xato")
+
+        old_caption = callback.message.caption or ""
+        await callback.message.edit_caption(caption=f"✅ TASDIQLANDI\n\n{old_caption}", reply_markup=None)
+        await callback.answer("Tasdiqlandi.")
+
+    @router.callback_query(F.data.startswith("payment_reject:"))
+    async def on_payment_reject(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+
+        payment_id = int(callback.data.split(":", 1)[1])
+        await state.clear()
+        await state.update_data(reject_payment_id=payment_id)
+        await state.set_state(AdminPaymentStates.waiting_for_rejection_reason)
+        await callback.message.answer("Rad etish sababini yozing (mijozga shu matn yuboriladi):")
+        await callback.answer()
+
+    @router.message(AdminPaymentStates.waiting_for_rejection_reason)
+    async def on_rejection_reason(message: Message, state: FSMContext, session: AsyncSession, bot: AiogramBot) -> None:
+        data = await state.get_data()
+        payment_id = data.get("reject_payment_id")
+        reason = (message.text or "").strip()
+        await state.clear()
+
+        try:
+            payment = await reject_payment(session, payment_id, message.from_user.id, reason or None)
+        except PaymentNotFoundError:
+            await message.answer("To'lov topilmadi.")
+            return
+        except NotAuthorizedError:
+            await message.answer("Ruxsat yo'q.")
+            return
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+
+        amount, label = await get_payment_amount_and_label(session, payment)
+        bot_result = await session.execute(select(BotModel).where(BotModel.id == payment.bot_id))
+        bot_row = bot_result.scalar_one_or_none()
+        if bot_row is not None:
+            owner_result = await session.execute(select(User).where(User.id == bot_row.owner_id))
+            owner = owner_result.scalar_one_or_none()
+            if owner is not None:
+                reason_line = f"\nSabab: {reason}" if reason else ""
+                try:
+                    await bot.send_message(
+                        owner.telegram_id,
+                        f"❌ To'lovingiz rad etildi.\n{label} — {int(amount)} so'm.{reason_line}\n\n"
+                        "Qaytadan chek yuborishingiz mumkin.",
+                    )
+                except Exception:
+                    logger.exception("Mijozga to'lov rad etilgani haqida xabar yuborishda xato")
+
+        await message.answer(f"❌ To'lov #{payment.id} rad etildi.")
+
+    # -----------------------------------------------------------------
+    # Momo Admin: 💰 Ta'riflar — narx/limit/muddat/tavsifni tahrirlash
+    # -----------------------------------------------------------------
+
+    @router.callback_query(F.data == "admin_menu:tariffs")
+    async def on_admin_menu_tariffs(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+        await state.clear()
+        tariffs = await _get_all_tariffs(session)
+        await callback.message.edit_text(
+            "Ta'riflarni boshqarish. Tahrirlash uchun tanlang:",
+            reply_markup=_admin_tariffs_list_keyboard(tariffs),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("admin_tariff_view:"))
+    async def on_admin_tariff_view(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+        await state.clear()
+        code = TariffCode(callback.data.split(":", 1)[1])
+        tariff = await get_tariff_by_code(session, code)
+        await callback.message.edit_text(
+            _format_tariff_detail(tariff) + "\n\nQaysi maydonni o'zgartirmoqchisiz?",
+            reply_markup=_admin_tariff_detail_keyboard(code),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("admin_tariff_edit:"))
+    async def on_admin_tariff_edit(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+
+        _, code_value, field_name = callback.data.split(":", 2)
+        if field_name not in TARIFF_FIELDS:
+            await callback.answer("Noma'lum maydon.", show_alert=True)
+            return
+
+        await state.clear()
+        await state.update_data(admin_tariff_code=code_value, admin_tariff_field=field_name)
+        await state.set_state(AdminTariffStates.waiting_for_field_value)
+
+        label = TARIFF_FIELDS[field_name]["label"]
+        await callback.message.answer(f"{label} uchun yangi qiymatni kiriting:")
+        await callback.answer()
+
+    @router.message(AdminTariffStates.waiting_for_field_value)
+    async def on_admin_tariff_value(message: Message, state: FSMContext, session: AsyncSession) -> None:
+        data = await state.get_data()
+        code = TariffCode(data.get("admin_tariff_code"))
+        field_name = data.get("admin_tariff_field")
+        raw_value = (message.text or "").strip()
+
+        try:
+            tariff = await update_tariff_field(session, code, field_name, raw_value)
+        except InvalidTariffFieldError as exc:
+            await message.answer(f"Xatolik: {exc}\nQaytadan kiriting:")
+            return  # holat o'zgarmaydi — admin qayta kiritishi mumkin
+        except LimitExceededError as exc:
+            await message.answer(f"Xatolik: {exc}")
+            await state.clear()
+            return
+
+        await state.clear()
+        await message.answer(
+            f"✅ Yangilandi.\n\n{_format_tariff_detail(tariff)}",
+            reply_markup=_admin_tariff_detail_keyboard(code),
+        )
+
+    # -----------------------------------------------------------------
+    # Momo Admin: 📊 Statistika
+    # -----------------------------------------------------------------
+
+    @router.callback_query(F.data == "admin_menu:stats")
+    async def on_admin_menu_stats(callback: CallbackQuery, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+
+        stats = await get_platform_stats(session)
+        status_line = ", ".join(
+            f"{_BOT_STATUS_ICON.get(status, '?')} {count}" for status, count in stats["status_counts"].items()
+        ) or "ma'lumot yo'q"
+        tariff_line = ", ".join(
+            f"{code.value} — {count}" for code, count in stats["tariff_counts"].items()
+        ) or "ma'lumot yo'q"
+
+        text = (
+            "📊 Umumiy statistika\n\n"
+            f"👥 Jami mijozlar: {stats['users_count']}\n"
+            f"🤖 Jami botlar: {stats['bots_count']} ({status_line})\n"
+            f"📦 Tariflar bo'yicha: {tariff_line}\n"
+            f"💳 Kutilayotgan to'lovlar: {stats['pending_payments']} ta"
+        )
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⬅️ Orqaga", callback_data="admin_menu:back")
+        kb.adjust(1)
+        await callback.message.edit_text(text, reply_markup=kb.as_markup())
+        await callback.answer()
 
     # -----------------------------------------------------------------
 
