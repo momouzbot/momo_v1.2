@@ -73,16 +73,39 @@ class Base(DeclarativeBase):
     MOS KELMAYDI va "type ... does not exist" xatosiga olib keladi.
     Shu sababli bu yerda nomlar migratsiya fayllaridagi (`alembic/versions/`)
     nomlar bilan so'zma-so'z bir xil bo'lishi SHART.
+
+    YANA BIR MUHIM NUQTA: `values_callable` — SQLAlchemy standart holatda
+    Python enum a'zosining NOMINI (masalan "START", katta harflar) DB'ga
+    yozadi, QIYMATINI ("start", kichik harflar) emas. Bizning migratsiyamiz
+    esa Postgres enum turini faqat kichik harfli qiymatlar bilan yaratgan
+    ("start", "standard", "premium" va h.k.). Shu nomuvofiqlik
+    "invalid input value for enum" xatosiga olib keladi. `values_callable`
+    SQLAlchemy'ga aynan `.value`ni ishlatishni buyuradi — bu muammoni butunlay
+    bartaraf qiladi.
     """
 
     type_annotation_map = {
-        ModuleType: SAEnum(ModuleType, name="module_type"),
-        TariffCode: SAEnum(TariffCode, name="tariff_code"),
-        BotStatus: SAEnum(BotStatus, name="bot_status"),
-        PaymentStatus: SAEnum(PaymentStatus, name="payment_status"),
-        PaymentKind: SAEnum(PaymentKind, name="payment_kind"),
-        AppealStatus: SAEnum(AppealStatus, name="appeal_status"),
-        AppealCategory: SAEnum(AppealCategory, name="appeal_category"),
+        ModuleType: SAEnum(
+            ModuleType, name="module_type", values_callable=lambda enum_cls: [e.value for e in enum_cls]
+        ),
+        TariffCode: SAEnum(
+            TariffCode, name="tariff_code", values_callable=lambda enum_cls: [e.value for e in enum_cls]
+        ),
+        BotStatus: SAEnum(
+            BotStatus, name="bot_status", values_callable=lambda enum_cls: [e.value for e in enum_cls]
+        ),
+        PaymentStatus: SAEnum(
+            PaymentStatus, name="payment_status", values_callable=lambda enum_cls: [e.value for e in enum_cls]
+        ),
+        PaymentKind: SAEnum(
+            PaymentKind, name="payment_kind", values_callable=lambda enum_cls: [e.value for e in enum_cls]
+        ),
+        AppealStatus: SAEnum(
+            AppealStatus, name="appeal_status", values_callable=lambda enum_cls: [e.value for e in enum_cls]
+        ),
+        AppealCategory: SAEnum(
+            AppealCategory, name="appeal_category", values_callable=lambda enum_cls: [e.value for e in enum_cls]
+        ),
     }
 
 
