@@ -30,6 +30,12 @@ class Settings(BaseSettings):
 
     scheduler_timezone: str = "Asia/Tashkent"
 
+    # Birinchi Momo Admin'ni avtomatik belgilash uchun (TZ 8-bo'lim: Momo Admin roli).
+    # Shu Telegram ID'li foydalanuvchi Momo botga /start bosganda avtomatik
+    # is_momo_admin=True qilib belgilanadi. Faqat siz (loyiha egasi) shu
+    # o'zgaruvchini bilasiz — boshqa hech kim o'zini admin qila olmaydi.
+    super_admin_telegram_id: int | None = None
+
     host: str = "0.0.0.0"
     port: int = 8000
 
