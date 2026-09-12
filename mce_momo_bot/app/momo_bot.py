@@ -21,6 +21,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.dispatcher.middleware import DBSessionMiddleware
 from app.models.base import ModuleType
 from app.models.bot import Bot as BotModel
@@ -48,6 +49,10 @@ _MODULE_LABELS = {
 class RegisterStates(StatesGroup):
     waiting_for_token = State()
     waiting_for_module = State()
+
+
+class AdminStates(StatesGroup):
+    waiting_for_pin = State()
 
 
 def _admin_modules_keyboard(modules: list[Module]):
@@ -128,16 +133,7 @@ def build_momo_dispatcher() -> Dispatcher:
     # deb qabul qilib oladi, /admin hech qachon ishlamay qoladi.
     # -----------------------------------------------------------------
 
-    @router.message(Command("admin"))
-    async def cmd_admin(message: Message, state: FSMContext, session: AsyncSession) -> None:
-        await state.clear()  # /admin buyrug'i "token kutish" kabi holatlarni bekor qiladi
-        user = await get_or_create_user(session, telegram_id=message.from_user.id)
-        await session.commit()
-
-        if not user.is_momo_admin:
-            await message.answer("Bu buyruq faqat Momo Admin uchun.")
-            return
-
+    async def _send_admin_panel(message: Message, session: AsyncSession) -> None:
         modules = await list_modules(session)
         if not modules:
             await message.answer("Modullar ro'yxati bo'sh (seed ishga tushmagan bo'lishi mumkin).")
@@ -148,6 +144,51 @@ def build_momo_dispatcher() -> Dispatcher:
             "(✅ = yoqilgan, foydalanuvchilarga ko'rinadi, ❌ = o'chirilgan)",
             reply_markup=_admin_modules_keyboard(modules),
         )
+
+    @router.message(Command("admin"))
+    async def cmd_admin(message: Message, state: FSMContext, session: AsyncSession) -> None:
+        await state.clear()  # /admin buyrug'i "token kutish" kabi holatlarni bekor qiladi
+        user = await get_or_create_user(session, telegram_id=message.from_user.id)
+        await session.commit()
+
+        if not user.is_momo_admin:
+            # Momo Admin bo'lmagan foydalanuvchiga PIN so'ralganini ham bildirmaymiz —
+            # aks holda bu buyruq admin panelining mavjudligini oshkor qiladi.
+            await message.answer("Bu buyruq faqat Momo Admin uchun.")
+            return
+
+        if not settings.admin_pin:
+            # ADMIN_PIN sozlanmagan — orqaga muvofiqlik uchun PIN'siz ochiladi,
+            # lekin bu ishlab chiqarishda tavsiya etilmaydi (Railway Variables'da
+            # ADMIN_PIN o'rnatib qo'yish kerak).
+            logger.warning("ADMIN_PIN sozlanmagan — /admin paneli PIN'siz ochildi.")
+            await _send_admin_panel(message, session)
+            return
+
+        await state.set_state(AdminStates.waiting_for_pin)
+        await message.answer("🔐 Xavfsizlik uchun admin PIN kodini kiriting:")
+
+    @router.message(AdminStates.waiting_for_pin, F.text.startswith("/"))
+    async def on_command_while_waiting_pin(message: Message, state: FSMContext) -> None:
+        """PIN kutish holatida boshqa buyruq yuborilsa — uni PIN sifatida qabul qilmaymiz."""
+        await state.clear()
+        await message.answer("PIN kiritish bekor qilindi. Qaytadan ochish uchun /admin yuboring.")
+
+    @router.message(AdminStates.waiting_for_pin)
+    async def on_admin_pin_entered(message: Message, state: FSMContext, session: AsyncSession) -> None:
+        await state.clear()
+
+        user = await get_or_create_user(session, telegram_id=message.from_user.id)
+        await session.commit()
+
+        entered_pin = (message.text or "").strip()
+        if not user.is_momo_admin or entered_pin != settings.admin_pin:
+            # Xato PIN yoki holat davomida admin huquqi yo'qolgan bo'lsa —
+            # aniq sabab aytilmaydi (brute-force/enumeration'ga qarshi).
+            await message.answer("Noto'g'ri PIN. Qaytadan urinish uchun /admin yuboring.")
+            return
+
+        await _send_admin_panel(message, session)
 
     @router.message(RegisterStates.waiting_for_token, F.text.startswith("/"))
     async def on_command_while_waiting_token(message: Message, state: FSMContext) -> None:
