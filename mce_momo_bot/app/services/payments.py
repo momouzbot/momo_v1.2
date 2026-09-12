@@ -129,6 +129,47 @@ async def get_payment_or_raise(session: AsyncSession, payment_id: int) -> Paymen
     return payment
 
 
+async def list_pending_payments(session: AsyncSession) -> list[Payment]:
+    """Admin panel — "💳 To'lovlar" bo'limida ko'rsatiladigan PENDING ro'yxati."""
+    result = await session.execute(
+        select(Payment).where(Payment.status == PaymentStatus.PENDING).order_by(Payment.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def get_payment_with_context(session: AsyncSession, payment_id: int) -> tuple[Payment, BotModel, User]:
+    """To'lovni bot va mijoz (owner) ma'lumotlari bilan birga qaytaradi —
+    admin panelda batafsil ko'rsatish uchun."""
+    payment = await get_payment_or_raise(session, payment_id)
+
+    bot_result = await session.execute(select(BotModel).where(BotModel.id == payment.bot_id))
+    bot_row = bot_result.scalar_one()
+
+    owner_result = await session.execute(select(User).where(User.id == bot_row.owner_id))
+    owner = owner_result.scalar_one()
+
+    return payment, bot_row, owner
+
+
+async def get_payment_amount_and_label(session: AsyncSession, payment: Payment) -> tuple[float, str]:
+    """To'lov turiga qarab (hosting/tarif oshirish) summa va inson o'qiy oladigan
+    tavsifni qaytaradi — Payment jadvalining o'zida summa saqlanmaydi, u
+    reference_id orqali HostingPayment/TariffUpgrade'dan olinadi."""
+    if payment.kind == PaymentKind.HOSTING:
+        result = await session.execute(select(HostingPayment).where(HostingPayment.id == payment.reference_id))
+        hosting_payment = result.scalar_one()
+        return float(hosting_payment.amount), "Oylik hosting to'lovi"
+
+    result = await session.execute(select(TariffUpgrade).where(TariffUpgrade.id == payment.reference_id))
+    tariff_upgrade = result.scalar_one()
+
+    tariff_result = await session.execute(select(Tariff).where(Tariff.code == tariff_upgrade.tariff_code))
+    tariff = tariff_result.scalar_one_or_none()
+    tariff_name = tariff.name if tariff else tariff_upgrade.tariff_code.value
+
+    return float(tariff_upgrade.amount), f"Tarif oshirish → {tariff_name}"
+
+
 async def _require_momo_admin(session: AsyncSession, reviewer_telegram_id: int) -> User:
     result = await session.execute(select(User).where(User.telegram_id == reviewer_telegram_id))
     user = result.scalar_one_or_none()
