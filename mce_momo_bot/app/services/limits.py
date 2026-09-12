@@ -48,6 +48,21 @@ async def get_active_tariff(session: AsyncSession, bot_id: int) -> Tariff:
     return tariff
 
 
+async def get_active_bot_tariff(session: AsyncSession, bot_id: int) -> BotTariff:
+    """get_active_tariff bilan bir xil, lekin Tariff (katalog) o'rniga BotTariff
+    (bot_id, started_at, expires_at) qatorini qaytaradi — mijozga tugash sanasini
+    ko'rsatish kerak bo'lganda ishlatiladi (TZ 5-bo'lim, "Botlarim" batafsil karta)."""
+    result = await session.execute(
+        select(BotTariff)
+        .where(BotTariff.bot_id == bot_id, BotTariff.is_active.is_(True))
+        .limit(1)
+    )
+    bot_tariff = result.scalar_one_or_none()
+    if bot_tariff is None:
+        raise LimitExceededError(f"Bot uchun faol tarif topilmadi: bot_id={bot_id}")
+    return bot_tariff
+
+
 async def check_bot_limit(session: AsyncSession, owner_id: int, tariff: Tariff) -> None:
     """Mijozning faol botlari soni tarif bot_limit'idan oshmasligini tekshiradi (TZ 6.1)."""
     result = await session.execute(
