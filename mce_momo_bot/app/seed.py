@@ -18,7 +18,9 @@ TARIFFS = [
         code=TariffCode.START,
         name="Start",
         bot_limit=1,
-        edit_limit_per_day=2,
+        # 10/kun — bepul tarifdagi mijozlar serverni (disk/CPU) haddan tashqari
+        # band qilib qo'ymasligi uchun ongli ravishda cheklangan.
+        edit_limit_per_day=10,
         upgrade_price=0,
         base_hosting_price=5000,
         user_threshold=1000,
@@ -64,8 +66,19 @@ async def seed() -> None:
         print("[SEED-DEBUG] Session ochildi. Tariffs tekshirilmoqda...", flush=True)
         for data in TARIFFS:
             existing = await session.execute(select(Tariff).where(Tariff.code == data["code"]))
-            if existing.scalar_one_or_none() is None:
+            tariff = existing.scalar_one_or_none()
+            if tariff is None:
                 session.add(Tariff(**data))
+            else:
+                # Tarif allaqachon mavjud bo'lsa ham, limitlar/narxlar kod ichidagi
+                # TARIFFS ro'yxati bilan har deployda avtomatik sinxronlanadi — Railway'da
+                # qo'lda SQL yozish shart emas (main.py'dagi migratsiya falsafasiga mos).
+                # upgrade_price'ga tegilmaydi — uni admin panel orqali qo'lda belgilash mo'ljallangan.
+                tariff.bot_limit = data["bot_limit"]
+                tariff.edit_limit_per_day = data["edit_limit_per_day"]
+                tariff.base_hosting_price = data["base_hosting_price"]
+                tariff.user_threshold = data["user_threshold"]
+                tariff.duration_days = data["duration_days"]
 
         print("[SEED-DEBUG] Tariffs tayyor. Modules tekshirilmoqda...", flush=True)
         for code, name, description, is_active in MODULES:
