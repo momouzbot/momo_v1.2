@@ -17,6 +17,10 @@ TARIFFS = [
     dict(
         code=TariffCode.START,
         name="Start",
+        description=(
+            "Bepul tarif — 1 ta bot, kuniga 10 tagacha tahrir. "
+            "Botingizni sinab ko'rish va boshlash uchun ideal."
+        ),
         bot_limit=1,
         # 10/kun — bepul tarifdagi mijozlar serverni (disk/CPU) haddan tashqari
         # band qilib qo'ymasligi uchun ongli ravishda cheklangan.
@@ -29,6 +33,10 @@ TARIFFS = [
     dict(
         code=TariffCode.STANDARD,
         name="Standard",
+        description=(
+            "2 tagacha bot, kuniga 4 tahrir, 180 kun muddat. "
+            "Bir nechta botni bir vaqtda boshqarish uchun qulay."
+        ),
         bot_limit=2,
         edit_limit_per_day=4,
         upgrade_price=0,  # admin belgilaydi — boshlang'ich qiymat 0, keyin admin panelda o'rnatiladi
@@ -39,6 +47,10 @@ TARIFFS = [
     dict(
         code=TariffCode.PREMIUM,
         name="Premium",
+        description=(
+            "7 tagacha bot, kuniga 10 tahrir, 180 kun muddat. "
+            "Faol biznes va ko'p botli mijozlar uchun to'liq imkoniyat."
+        ),
         bot_limit=7,
         edit_limit_per_day=10,
         upgrade_price=0,
@@ -70,15 +82,16 @@ async def seed() -> None:
             if tariff is None:
                 session.add(Tariff(**data))
             else:
-                # Tarif allaqachon mavjud bo'lsa ham, limitlar/narxlar kod ichidagi
-                # TARIFFS ro'yxati bilan har deployda avtomatik sinxronlanadi — Railway'da
-                # qo'lda SQL yozish shart emas (main.py'dagi migratsiya falsafasiga mos).
-                # upgrade_price'ga tegilmaydi — uni admin panel orqali qo'lda belgilash mo'ljallangan.
-                tariff.bot_limit = data["bot_limit"]
-                tariff.edit_limit_per_day = data["edit_limit_per_day"]
-                tariff.base_hosting_price = data["base_hosting_price"]
-                tariff.user_threshold = data["user_threshold"]
-                tariff.duration_days = data["duration_days"]
+                # MUHIM O'ZGARISH: avval bu yerda bot_limit/edit_limit/narx/muddat
+                # HAR DEPLOYDA kod ichidagi TARIFFS bilan qayta yozib qo'yilardi —
+                # bu admin panel orqali kiritilgan o'zgarishlarni (masalan narxni
+                # oshirish) keyingi deployda yo'qqa chiqarardi. Endi tarif
+                # allaqachon bazada mavjud bo'lsa, unga umuman tegilmaydi — barcha
+                # o'zgarishlar faqat admin panel orqali kiritiladi va doimiy
+                # saqlanadi. `description` ham faqat hali bo'sh bo'lsa to'ldiriladi
+                # (admin keyinchalik o'zgartirgan bo'lsa, ustidan yozilmasin).
+                if not tariff.description:
+                    tariff.description = data["description"]
 
         print("[SEED-DEBUG] Tariffs tayyor. Modules tekshirilmoqda...", flush=True)
         for code, name, description, is_active in MODULES:
