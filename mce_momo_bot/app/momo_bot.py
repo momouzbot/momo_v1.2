@@ -118,6 +118,52 @@ def build_momo_dispatcher() -> Dispatcher:
             lines.append(f"[{emoji}] @{b.username} - {label}")
         await message.answer("\n".join(lines))
 
+    # -----------------------------------------------------------------
+    # Momo Admin oqimi (TZ 8-bo'lim) — MUHIM: bu handler "token kutish"
+    # holati handleridan (on_token_received) OLDIN ro'yxatdan o'tishi
+    # SHART. Aks holda, agar foydalanuvchi /newbot bosib "token kutish"
+    # holatida bo'lsa, keyin /admin yuborsa — aiogram handlerlarni
+    # ro'yxatdan o'tish tartibida tekshiradi va on_token_received uni
+    # (Command filtersiz, faqat State filtri bilan) "noto'g'ri token"
+    # deb qabul qilib oladi, /admin hech qachon ishlamay qoladi.
+    # -----------------------------------------------------------------
+
+    @router.message(Command("admin"))
+    async def cmd_admin(message: Message, state: FSMContext, session: AsyncSession) -> None:
+        await state.clear()  # /admin buyrug'i "token kutish" kabi holatlarni bekor qiladi
+        user = await get_or_create_user(session, telegram_id=message.from_user.id)
+        await session.commit()
+
+        if not user.is_momo_admin:
+            await message.answer("Bu buyruq faqat Momo Admin uchun.")
+            return
+
+        modules = await list_modules(session)
+        if not modules:
+            await message.answer("Modullar ro'yxati bo'sh (seed ishga tushmagan bo'lishi mumkin).")
+            return
+
+        await message.answer(
+            "Modullarni boshqarish. Bosilgan modul yoqiladi/o'chiriladi:\n"
+            "(✅ = yoqilgan, foydalanuvchilarga ko'rinadi, ❌ = o'chirilgan)",
+            reply_markup=_admin_modules_keyboard(modules),
+        )
+
+    @router.message(RegisterStates.waiting_for_token, F.text.startswith("/"))
+    async def on_command_while_waiting_token(message: Message, state: FSMContext) -> None:
+        """
+        Himoya qatlami: agar "token kutish" holatida foydalanuvchi biror
+        buyruq (/admin, /mybots va h.k.) yuborsa — buni token sifatida
+        qabul qilmaymiz, holatni bekor qilib, umumiy fallback orqali
+        yo'naltiramiz (yoki yuqoridagi tegishli Command handler allaqachon
+        ushlagan bo'ladi, chunki bu handler ulardan KEYIN ro'yxatdan o'tgan).
+        """
+        await state.clear()
+        await message.answer(
+            "Buyruqni bekor qildim (token kutish rejimidan chiqdingiz). "
+            "Qaytadan bot yaratish uchun /newbot yuboring."
+        )
+
     @router.message(RegisterStates.waiting_for_token)
     async def on_token_received(message: Message, state: FSMContext, session: AsyncSession) -> None:
         token = (message.text or "").strip()
@@ -203,28 +249,8 @@ def build_momo_dispatcher() -> Dispatcher:
         await state.clear()
 
     # -----------------------------------------------------------------
-    # Momo Admin oqimi (TZ 8-bo'lim)
+    # Momo Admin: modul yoqish/o'chirish tugmasi (callback)
     # -----------------------------------------------------------------
-
-    @router.message(Command("admin"))
-    async def cmd_admin(message: Message, session: AsyncSession) -> None:
-        user = await get_or_create_user(session, telegram_id=message.from_user.id)
-        await session.commit()
-
-        if not user.is_momo_admin:
-            await message.answer("Bu buyruq faqat Momo Admin uchun.")
-            return
-
-        modules = await list_modules(session)
-        if not modules:
-            await message.answer("Modullar ro'yxati bo'sh (seed ishga tushmagan bo'lishi mumkin).")
-            return
-
-        await message.answer(
-            "Modullarni boshqarish. Bosilgan modul yoqiladi/o'chiriladi:\n"
-            "(✅ = yoqilgan, foydalanuvchilarga ko'rinadi, ❌ = o'chirilgan)",
-            reply_markup=_admin_modules_keyboard(modules),
-        )
 
     @router.callback_query(F.data.startswith("admin_toggle:"))
     async def on_admin_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
