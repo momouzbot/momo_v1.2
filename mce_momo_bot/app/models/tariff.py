@@ -15,6 +15,9 @@ class Tariff(Base, IDMixin, TimestampMixin):
 
     code: Mapped[TariffCode] = mapped_column(unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Mijozga ta'rif tanlash bosqichida ko'rsatiladigan qisqa tavsif (TZ 5-bo'lim
+    # yangilanishi). Admin panel orqali o'zgartiriladi, kodga mahkamlanmagan.
+    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     bot_limit: Mapped[int] = mapped_column(Integer, nullable=False)          # Start=1, Standard=2, Premium=7
     edit_limit_per_day: Mapped[int] = mapped_column(Integer, nullable=False)  # 2 / 4 / 10
