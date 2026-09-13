@@ -12,6 +12,7 @@ import pytz
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.base import BotStatus, TariffCode
 from app.models.bot import Bot as BotModel
 from app.models.bot import BotTariff, EditLog
 from app.models.tariff import Tariff
@@ -50,8 +51,11 @@ async def get_active_tariff(session: AsyncSession, bot_id: int) -> Tariff:
 
 async def get_active_bot_tariff(session: AsyncSession, bot_id: int) -> BotTariff:
     """get_active_tariff bilan bir xil, lekin Tariff (katalog) o'rniga BotTariff
-    (bot_id, started_at, expires_at) qatorini qaytaradi — mijozga tugash sanasini
-    ko'rsatish kerak bo'lganda ishlatiladi (TZ 5-bo'lim, "Botlarim" batafsil karta)."""
+    (bot_id, started_at, expires_at) qatorini qaytaradi — bu botning O'ZIGA
+    biriktirilgan (haridi qilingan) tarifni bildiradi. Mijozga ko'rsatiladigan
+    "amaldagi" tarif uchun get_owner_effective_bot_tariff() dan foydalaning —
+    bu funksiya asosan ichki hisob-kitob (masalan tarif muddati nazorati)
+    uchun saqlangan."""
     result = await session.execute(
         select(BotTariff)
         .where(BotTariff.bot_id == bot_id, BotTariff.is_active.is_(True))
@@ -63,24 +67,111 @@ async def get_active_bot_tariff(session: AsyncSession, bot_id: int) -> BotTariff
     return bot_tariff
 
 
-async def check_bot_limit(session: AsyncSession, owner_id: int, tariff: Tariff) -> None:
-    """Mijozning faol botlari soni tarif bot_limit'idan oshmasligini tekshiradi (TZ 6.1)."""
+# Tarif darajalari — "eng yuqori" tarifni aniqlash uchun. bot_limit kabi
+# raqamli maydonlarga emas, aynan shu tartibga tayanamiz — chunki admin
+# panel orqali bot_limit/narx keyinchalik o'zgartirilishi mumkin, lekin
+# Premium har doim Standard'dan, Standard esa Start'dan "yuqori" bo'lib qolishi kerak.
+TARIFF_RANK: dict[TariffCode, int] = {
+    TariffCode.START: 0,
+    TariffCode.STANDARD: 1,
+    TariffCode.PREMIUM: 2,
+}
+
+
+async def get_owner_effective_tariff(session: AsyncSession, owner_id: int) -> Tariff:
+    """
+    Mijozning HAMMA botlariga qo'llaniladigan "amaldagi" tarif.
+
+    MUHIM QOIDA (mijoz talabi): agar mijozning istalgan bir boti
+    Standard/Premium'ga oshirilgan bo'lsa, o'sha eng yuqori daraja mijozning
+    BARCHA botlariga tatbiq etiladi — hatto Start tarifida ochilgan
+    (hech qachon alohida oshirilmagan) botlariga ham. Amalda tarif bazada
+    har bir botga alohida yozuv sifatida saqlanadi (BotTariff), lekin
+    funksional cheklovlar (kunlik tahrir limiti, hosting narxi, bot soni)
+    endi shu funksiya orqali — owner darajasida — aniqlanadi.
+    """
     result = await session.execute(
-        select(func.count()).select_from(BotModel).where(BotModel.owner_id == owner_id)
+        select(Tariff)
+        .join(BotTariff, BotTariff.tariff_code == Tariff.code)
+        .join(BotModel, BotModel.id == BotTariff.bot_id)
+        .where(
+            BotModel.owner_id == owner_id,
+            BotModel.status != BotStatus.DELETED,
+            BotTariff.is_active.is_(True),
+        )
+    )
+    tariffs = result.scalars().all()
+    if not tariffs:
+        return await get_tariff_by_code(session, TariffCode.START)
+    return max(tariffs, key=lambda t: TARIFF_RANK.get(t.code, 0))
+
+
+async def get_owner_effective_bot_tariff(session: AsyncSession, owner_id: int) -> BotTariff:
+    """get_owner_effective_tariff bilan bir xil mantiq, lekin BotTariff
+    qatorini (tugash sanasi bilan) qaytaradi — "Botlarim" batafsil kartada
+    ko'rsatish uchun. Agar mijozning bir nechta boti bir xil eng yuqori
+    darajada bo'lsa — ulardan biri qaytariladi (amalda deyarli har doim
+    faqat bitta bot haqiqiy xarid qilingan tarifga ega bo'ladi)."""
+    result = await session.execute(
+        select(BotTariff)
+        .join(BotModel, BotModel.id == BotTariff.bot_id)
+        .where(
+            BotModel.owner_id == owner_id,
+            BotModel.status != BotStatus.DELETED,
+            BotTariff.is_active.is_(True),
+        )
+    )
+    bot_tariffs = result.scalars().all()
+    if not bot_tariffs:
+        raise LimitExceededError(f"Mijoz uchun faol tarif topilmadi: owner_id={owner_id}")
+    return max(bot_tariffs, key=lambda bt: TARIFF_RANK.get(bt.tariff_code, 0))
+
+
+async def get_owner_bot_limit(session: AsyncSession, owner_id: int) -> int:
+    """Mijoz YANGI bot yaratishi mumkin bo'lgan limit — amaldagi (eng yuqori)
+    tarifga qarab (bot hali umuman yo'q bo'lsa — Start limiti)."""
+    tariff = await get_owner_effective_tariff(session, owner_id)
+    return tariff.bot_limit
+
+
+async def check_bot_limit(session: AsyncSession, owner_id: int, bot_limit: int) -> None:
+    """
+    Mijozning faol botlari soni berilgan limitdan oshmasligini tekshiradi (TZ 6.1).
+
+    MUHIM TUZATISH: avval o'chirilgan (DELETED) botlar ham hisoblanardi —
+    mijoz botini o'chirsa ham, limit "band" bo'lib qolaverardi. Endi faqat
+    DELETED bo'lmagan botlar hisoblanadi.
+
+    `bot_limit` — chaqiruvchi tomon aniqlab beradi (odatda
+    `get_owner_bot_limit()` orqali), chunki tarif har bir botga alohida
+    biriktirilgan va to'g'ri limitni tanlash chaqiruvchining vazifasi.
+    """
+    result = await session.execute(
+        select(func.count())
+        .select_from(BotModel)
+        .where(BotModel.owner_id == owner_id, BotModel.status != BotStatus.DELETED)
     )
     active_count = result.scalar_one()
-    if active_count >= tariff.bot_limit:
-        raise LimitExceededError(
-            f"Bot limiti to'lgan: {active_count}/{tariff.bot_limit} (tarif: {tariff.code})"
-        )
+    if active_count >= bot_limit:
+        raise LimitExceededError(f"Bot limiti to'lgan: {active_count}/{bot_limit}")
 
 
 async def check_and_increment_edit_limit(session: AsyncSession, bot_id: int) -> None:
     """
     Yangi funksional panel/modul elementi qo'shishdan oldin chaqiriladi (TZ 6.2).
     Limitga yetgan bo'lsa LimitExceededError ko'taradi, aks holda hisoblagichni +1 qiladi.
+
+    MUHIM: limit botning O'ZINING tarifi emas, balki mijozning AMALDAGI (eng
+    yuqori) tarifi bo'yicha aniqlanadi — Premium mijozning barcha botlari,
+    hatto Start'da ochilganlari ham, Premium darajasidagi kunlik limitdan
+    foydalanadi.
     """
-    tariff = await get_active_tariff(session, bot_id)
+    owner_result = await session.execute(select(BotModel.owner_id).where(BotModel.id == bot_id))
+    owner_id = owner_result.scalar_one_or_none()
+    if owner_id is None:
+        raise LimitExceededError(f"Bot topilmadi: bot_id={bot_id}")
+
+    tariff = await get_owner_effective_tariff(session, owner_id)
     today = today_tashkent()
 
     result = await session.execute(
@@ -107,8 +198,17 @@ async def calculate_hosting_price(session: AsyncSession, bot_id: int, unique_use
     1000 user chegarasi formulasi (TZ 6.3):
         koeffitsient = floor(user_soni / 1000) + 1
         narx = base_hosting_price * koeffitsient
+
+    MUHIM: narx botning O'ZINING tarifi emas, balki mijozning AMALDAGI (eng
+    yuqori) tarifi bo'yicha hisoblanadi — Premium mijozning barcha botlari
+    Premium darajasidagi (odatda arzonroq) hosting narxidan foydalanadi.
     """
-    tariff = await get_active_tariff(session, bot_id)
+    owner_result = await session.execute(select(BotModel.owner_id).where(BotModel.id == bot_id))
+    owner_id = owner_result.scalar_one_or_none()
+    if owner_id is None:
+        raise LimitExceededError(f"Bot topilmadi: bot_id={bot_id}")
+
+    tariff = await get_owner_effective_tariff(session, owner_id)
     coefficient = (unique_user_count // tariff.user_threshold) + 1
     return float(tariff.base_hosting_price) * coefficient
 
