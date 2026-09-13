@@ -20,7 +20,7 @@ from app.models.base import BotStatus, ModuleType, TariffCode
 from app.models.bot import Bot as BotModel
 from app.models.bot import BotTariff
 from app.services.crypto import encrypt_token
-from app.services.limits import LimitExceededError, check_bot_limit, get_tariff_by_code
+from app.services.limits import LimitExceededError, check_bot_limit, get_owner_bot_limit
 from app.services.telegram import InvalidTokenError, set_webhook, validate_token
 from app.services.users import get_or_create_user
 
@@ -65,9 +65,15 @@ async def register_bot_for_owner(
         session, telegram_id=owner_telegram_id, username=owner_username, full_name=owner_full_name
     )
 
-    # --- 3-4. Start tarifi va bot limiti tekshiruvi ---
-    start_tariff = await get_tariff_by_code(session, TariffCode.START)
-    await check_bot_limit(session, owner_id=user.id, tariff=start_tariff)  # LimitExceededError
+    # --- 3-4. Bot limiti tekshiruvi ---
+    # MUHIM TUZATISH: avval bu yerda DOIM Start tarifining limiti (1 ta)
+    # bilan solishtirilardi — mijozning boshqa botlaridan biri
+    # Standard/Premium'ga oshirilgan bo'lsa ham, ikkinchi bot yaratib
+    # bo'lmasdi. Endi mijozning mavjud botlari orasidagi eng yuqori faol
+    # tarif limiti ishlatiladi (get_owner_bot_limit — bot hali yo'q bo'lsa,
+    # Start limiti bilan bir xil natija beradi).
+    effective_bot_limit = await get_owner_bot_limit(session, user.id)
+    await check_bot_limit(session, owner_id=user.id, bot_limit=effective_bot_limit)  # LimitExceededError
 
     # --- 5. Bot yozuvini yaratish ---
     external_api_key = secrets.token_urlsafe(32) if externally_hosted else None
