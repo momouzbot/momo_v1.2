@@ -44,9 +44,10 @@ from app.models.tariff import Tariff
 from app.models.user import User
 from app.services.limits import (
     LimitExceededError,
+    TARIFF_RANK,
     calculate_hosting_price,
-    get_active_bot_tariff,
-    get_active_tariff,
+    get_owner_effective_bot_tariff,
+    get_owner_effective_tariff,
     get_tariff_by_code,
     get_unique_user_count,
 )
@@ -296,8 +297,8 @@ async def _format_bot_detail(session: AsyncSession, bot_row: BotModel) -> tuple[
     """Bot uchun to'liq holat matnini qaytaradi: tarif, tugash sanasi, joriy oy
     foydalanuvchilari/narxi va to'lov holati — barchasi bazadan real vaqtda
     hisoblanadi (TZ 5-bo'lim, "Botlarim" batafsil karta)."""
-    tariff = await get_active_tariff(session, bot_row.id)
-    bot_tariff_row = await get_active_bot_tariff(session, bot_row.id)
+    tariff = await get_owner_effective_tariff(session, bot_row.owner_id)
+    bot_tariff_row = await get_owner_effective_bot_tariff(session, bot_row.owner_id)
     unique_users = await get_unique_user_count(session, bot_row.id)
     hosting_price = await calculate_hosting_price(session, bot_row.id, unique_users)
     payment_status = await hosting_payment_status_this_month(session, bot_row.id)
@@ -641,15 +642,20 @@ def build_momo_dispatcher() -> Dispatcher:
             return
 
         try:
-            current_tariff = await get_active_tariff(session, bot_id)
+            current_tariff = await get_owner_effective_tariff(session, bot_row.owner_id)
         except LimitExceededError as exc:
             await callback.answer(f"Xatolik: {exc}", show_alert=True)
             return
 
         all_tariffs = await _get_all_tariffs(session)
-        other_tariffs = [t for t in all_tariffs if t.code != current_tariff.code]
+        other_tariffs = [
+            t for t in all_tariffs if TARIFF_RANK.get(t.code, 0) > TARIFF_RANK.get(current_tariff.code, 0)
+        ]
         if not other_tariffs:
-            await callback.answer("Boshqa tarif mavjud emas.", show_alert=True)
+            await callback.answer(
+                "Sizda allaqachon eng yuqori faol tarif bor (boshqa botingiz orqali bo'lsa ham).",
+                show_alert=True,
+            )
             return
 
         await state.clear()
@@ -679,14 +685,21 @@ def build_momo_dispatcher() -> Dispatcher:
         data = await state.get_data()
         bot_id = data.get("payment_bot_id")
 
+        bot_row = await _get_owned_bot_or_none(session, callback.from_user.id, bot_id)
+        if bot_row is None:
+            await callback.answer("Bot topilmadi.", show_alert=True)
+            return
+
         try:
-            current_tariff = await get_active_tariff(session, bot_id)
+            current_tariff = await get_owner_effective_tariff(session, bot_row.owner_id)
         except LimitExceededError as exc:
             await callback.answer(f"Xatolik: {exc}", show_alert=True)
             return
 
         all_tariffs = await _get_all_tariffs(session)
-        other_tariffs = [t for t in all_tariffs if t.code != current_tariff.code]
+        other_tariffs = [
+            t for t in all_tariffs if TARIFF_RANK.get(t.code, 0) > TARIFF_RANK.get(current_tariff.code, 0)
+        ]
         await callback.message.edit_text(
             "Qaysi tarifga o'tmoqchisiz? Batafsil ma'lumot uchun bosing:",
             reply_markup=_upgrade_tariff_keyboard(bot_id, other_tariffs),
