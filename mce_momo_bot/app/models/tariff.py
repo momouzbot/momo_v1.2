@@ -28,8 +28,17 @@ class Tariff(Base, IDMixin, TimestampMixin):
     # Bazaviy oylik hosting narxi (bot boshiga), 1x koeffitsient uchun
     base_hosting_price: Mapped[Numeric] = mapped_column(Numeric(12, 2), nullable=False)
 
+    # Haftalik hosting narxi (bot boshiga), 1x koeffitsient uchun — mijoz
+    # "Botlarim" bo'limida haftalik yoki oylik to'lashni tanlaydi.
+    weekly_hosting_price: Mapped[Numeric] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+
     # 1000 user chegarasi (TZ 6.3) — koeffitsient shu qiymat asosida hisoblanadi
     user_threshold: Mapped[int] = mapped_column(Integer, default=1000, nullable=False)
 
     # Tarif muddati (kun hisobida). Start uchun NULL — muddatsiz.
     duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Standard/Premium = 180
+
+    # Tarif muddati tugagach, botlar hali FAOL holatda qoladigan qo'shimcha
+    # kun soni (masalan Premium = 30 kun imtiyoz, Standard = 0 — darhol
+    # cheklanadi). tariff_check.py shu qiymatni hisobga oladi.
+    grace_period_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
