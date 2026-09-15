@@ -12,7 +12,7 @@ joyda takrorlanmaydi.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.schemas_payments import (
     PaymentResponse,
@@ -20,6 +20,7 @@ from app.api.schemas_payments import (
     SubmitHostingPaymentRequest,
     SubmitTariffUpgradeRequest,
 )
+from app.api.security import require_api_key
 from app.database import AsyncSessionLocal
 from app.services.limits import LimitExceededError
 from app.services.payments import (
@@ -32,14 +33,16 @@ from app.services.payments import (
     submit_tariff_upgrade,
 )
 
-router = APIRouter(prefix="/api/payments", tags=["payments"])
+router = APIRouter(prefix="/api/payments", tags=["payments"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("/hosting", response_model=PaymentResponse)
 async def submit_hosting_payment_endpoint(payload: SubmitHostingPaymentRequest) -> PaymentResponse:
     async with AsyncSessionLocal() as session:
         try:
-            payment, amount = await submit_hosting_payment(session, payload.bot_id, payload.receipt_file_id)
+            payment, amount = await submit_hosting_payment(
+                session, payload.bot_id, payload.billing_period, payload.receipt_file_id
+            )
         except LimitExceededError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except HostingPaymentAlreadyExistsError as exc:
