@@ -78,9 +78,14 @@ async def report_usage(bot_id: int, payload: ReportUsageRequest) -> ReportUsageR
         bot_row.external_user_count = payload.unique_user_count
         await session.commit()
 
+        from app.models.base import BillingPeriod
         from app.services.limits import calculate_hosting_price
 
-        price = await calculate_hosting_price(session, bot_id, payload.unique_user_count)
+        # Eslatma: bu yerda taxminiy narx sifatida OYLIK narx qaytariladi
+        # (GOT Game bu qiymatni faqat ma'lumot uchun ishlatadi — haqiqiy
+        # to'lov davri mijoz Momo botida "Botlarim" orqali tanlagan davrga
+        # qarab belgilanadi).
+        price = await calculate_hosting_price(session, bot_id, payload.unique_user_count, BillingPeriod.MONTHLY)
 
         return ReportUsageResponse(
             bot_id=bot_id,
@@ -117,4 +122,3 @@ async def get_bot_status(bot_id: int, api_key: str = Query(...)) -> BotStatusRes
             ),
             should_serve=bot_row.status == BotStatus.ACTIVE,
         )
-
