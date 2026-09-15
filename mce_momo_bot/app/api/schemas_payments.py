@@ -5,11 +5,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from app.models.base import PaymentKind, PaymentStatus, TariffCode
+from app.models.base import BillingPeriod, PaymentKind, PaymentStatus, TariffCode
 
 
 class SubmitHostingPaymentRequest(BaseModel):
     bot_id: int
+    billing_period: BillingPeriod
     receipt_file_id: str = Field(..., description="Telegram file_id — chek screenshot")
 
 
