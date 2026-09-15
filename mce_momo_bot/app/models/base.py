@@ -48,6 +48,14 @@ class PaymentKind(str, enum.Enum):
     TARIFF_UPGRADE = "tariff_upgrade"  # bir martalik tarifga o'tish to'lovi
 
 
+class BillingPeriod(str, enum.Enum):
+    """Hosting to'lovi qaysi davr uchun qilinganini bildiradi (TZ narx
+    jadvali yangilanishi — mijoz haftalik yoki oylik to'lashni tanlaydi)."""
+
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+
+
 class AppealStatus(str, enum.Enum):
     """SupportModule uchun murojaat holati (app/models/appeal.py da ishlatiladi)."""
 
@@ -99,6 +107,9 @@ class Base(DeclarativeBase):
         ),
         PaymentKind: SAEnum(
             PaymentKind, name="payment_kind", values_callable=lambda enum_cls: [e.value for e in enum_cls]
+        ),
+        BillingPeriod: SAEnum(
+            BillingPeriod, name="billing_period", values_callable=lambda enum_cls: [e.value for e in enum_cls]
         ),
         AppealStatus: SAEnum(
             AppealStatus, name="appeal_status", values_callable=lambda enum_cls: [e.value for e in enum_cls]
