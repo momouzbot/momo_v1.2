@@ -18,45 +18,49 @@ TARIFFS = [
         code=TariffCode.START,
         name="Start",
         description=(
-            "Bepul tarif — 1 ta bot, kuniga 10 tagacha tahrir. "
+            "Bepul tarif — 1 ta bot, kuniga 3 tagacha tahrir. "
             "Botingizni sinab ko'rish va boshlash uchun ideal."
         ),
         bot_limit=1,
-        # 10/kun — bepul tarifdagi mijozlar serverni (disk/CPU) haddan tashqari
-        # band qilib qo'ymasligi uchun ongli ravishda cheklangan.
-        edit_limit_per_day=10,
+        edit_limit_per_day=3,
         upgrade_price=0,
-        base_hosting_price=5000,
+        base_hosting_price=12000,
+        weekly_hosting_price=3900,
         user_threshold=1000,
         duration_days=None,  # muddatsiz
+        grace_period_days=0,
     ),
     dict(
         code=TariffCode.STANDARD,
         name="Standard",
         description=(
-            "2 tagacha bot, kuniga 4 tahrir, 180 kun muddat. "
-            "Bir nechta botni bir vaqtda boshqarish uchun qulay."
+            "3 tagacha bot, kuniga 5 tahrir, 2 oy (60 kun) muddat. "
+            "Muddat tugasa — ortiqcha botlar darhol to'xtatiladi."
         ),
-        bot_limit=2,
-        edit_limit_per_day=4,
-        upgrade_price=0,  # admin belgilaydi — boshlang'ich qiymat 0, keyin admin panelda o'rnatiladi
-        base_hosting_price=3000,
+        bot_limit=3,
+        edit_limit_per_day=5,
+        upgrade_price=49000,
+        base_hosting_price=10000,
+        weekly_hosting_price=2900,
         user_threshold=1000,
-        duration_days=180,
+        duration_days=60,
+        grace_period_days=0,
     ),
     dict(
         code=TariffCode.PREMIUM,
         name="Premium",
         description=(
-            "7 tagacha bot, kuniga 10 tahrir, 180 kun muddat. "
-            "Faol biznes va ko'p botli mijozlar uchun to'liq imkoniyat."
+            "5 tagacha bot, kuniga 10 tahrir, 6 oy (180 kun) muddat. "
+            "Muddat tugasa ham botlar yana 30 kun faol qoladi (imtiyoz)."
         ),
-        bot_limit=7,
+        bot_limit=5,
         edit_limit_per_day=10,
-        upgrade_price=0,
-        base_hosting_price=1500,
+        upgrade_price=150000,
+        base_hosting_price=7000,
+        weekly_hosting_price=1900,
         user_threshold=1000,
         duration_days=180,
+        grace_period_days=30,
     ),
 ]
 
