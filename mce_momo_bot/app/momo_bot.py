@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.dispatcher.middleware import DBSessionMiddleware
-from app.models.base import BotStatus, ModuleType, PaymentStatus, TariffCode
+from app.models.base import BillingPeriod, BotStatus, ModuleType, PaymentStatus, TariffCode
 from app.models.bot import Bot as BotModel
 from app.models.module import Module
 from app.models.payment import Payment
@@ -57,9 +57,9 @@ from app.services.payments import (
     NotAuthorizedError,
     PaymentNotFoundError,
     approve_payment,
+    get_hosting_coverage,
     get_payment_amount_and_label,
     get_payment_with_context,
-    hosting_payment_status_this_month,
     list_pending_payments,
     reject_payment,
     submit_hosting_payment,
@@ -221,10 +221,13 @@ def _format_tariff_detail(t: Tariff) -> str:
     lines.append(f"• Bot soni: {t.bot_limit} ta")
     lines.append(f"• Kunlik tahrir limiti: {t.edit_limit_per_day} marta")
     lines.append(f"• Muddat: {t.duration_days} kun" if t.duration_days else "• Muddat: muddatsiz")
+    if t.duration_days and t.grace_period_days:
+        lines.append(f"• Muddat tugagach imtiyoz: yana {t.grace_period_days} kun faol qoladi")
     if float(t.upgrade_price) > 0:
         lines.append(f"• Tarifga o'tish narxi: {int(t.upgrade_price)} so'm")
     lines.append(
-        f"• Hosting narxi (oyiga, {t.user_threshold} foydalanuvchigacha): {int(t.base_hosting_price)} so'm"
+        f"• Hosting narxi ({t.user_threshold} foydalanuvchigacha): "
+        f"haftasiga {int(t.weekly_hosting_price)} so'm / oyiga {int(t.base_hosting_price)} so'm"
     )
     return "\n".join(lines)
 
@@ -256,12 +259,11 @@ _BOT_STATUS_ICON = {
 _BOT_STATUS_LABEL = {
     BotStatus.ACTIVE: "✅ Faol",
     BotStatus.PAUSED: "⏸ To'xtatilgan (hosting to'lanmagan)",
-    BotStatus.SUSPENDED: "⛔ Muddat tugagan, Start'ga tushirilgan",
+    BotStatus.SUSPENDED: "⛔ To'xtatilgan (tarif muddati tugab, bot limitidan oshgan)",
     BotStatus.DELETED: "🗑 O'chirilgan",
 }
 
-_HOSTING_PAYMENT_LABEL = {
-    None: "❌ To'lanmagan",
+_HOSTING_STATUS_WORD = {
     PaymentStatus.PENDING: "⏳ Kutilmoqda",
     PaymentStatus.APPROVED: "✅ To'langan",
     PaymentStatus.REJECTED: "❌ Rad etilgan (qayta yuboring)",
@@ -294,21 +296,29 @@ async def _my_bots_keyboard(session: AsyncSession, user: User) -> InlineKeyboard
 
 
 async def _format_bot_detail(session: AsyncSession, bot_row: BotModel) -> tuple[str, PaymentStatus | None]:
-    """Bot uchun to'liq holat matnini qaytaradi: tarif, tugash sanasi, joriy oy
-    foydalanuvchilari/narxi va to'lov holati — barchasi bazadan real vaqtda
-    hisoblanadi (TZ 5-bo'lim, "Botlarim" batafsil karta)."""
+    """Bot uchun to'liq holat matnini qaytaradi: tarif, tugash sanasi, joriy
+    davr foydalanuvchilari/narxi (haftalik va oylik ikkalasi ham) va hosting
+    to'lovi holati — barchasi bazadan real vaqtda hisoblanadi."""
     tariff = await get_owner_effective_tariff(session, bot_row.owner_id)
     bot_tariff_row = await get_owner_effective_bot_tariff(session, bot_row.owner_id)
     unique_users = await get_unique_user_count(session, bot_row.id)
-    hosting_price = await calculate_hosting_price(session, bot_row.id, unique_users)
-    payment_status = await hosting_payment_status_this_month(session, bot_row.id)
+    weekly_price = await calculate_hosting_price(session, bot_row.id, unique_users, BillingPeriod.WEEKLY)
+    monthly_price = await calculate_hosting_price(session, bot_row.id, unique_users, BillingPeriod.MONTHLY)
+    payment_status, period_end, billing_period = await get_hosting_coverage(session, bot_row.id)
 
     expires_label = (
         bot_tariff_row.expires_at.strftime("%Y-%m-%d") if bot_tariff_row.expires_at else "Muddatsiz"
     )
     label = _MODULE_LABELS.get(bot_row.module_type, bot_row.module_type.value)
     status_label = _BOT_STATUS_LABEL.get(bot_row.status, bot_row.status.value)
-    payment_label = _HOSTING_PAYMENT_LABEL[payment_status]
+
+    if payment_status is None:
+        payment_label = "❌ To'lanmagan"
+    else:
+        period_word = "Haftalik" if billing_period == BillingPeriod.WEEKLY else "Oylik"
+        status_word = _HOSTING_STATUS_WORD[payment_status]
+        until = f" ({period_end.strftime('%Y-%m-%d')} gacha)" if payment_status == PaymentStatus.APPROVED else ""
+        payment_label = f"{status_word} — {period_word}{until}"
 
     lines = [
         f"🤖 @{bot_row.username}",
@@ -318,18 +328,24 @@ async def _format_bot_detail(session: AsyncSession, bot_row: BotModel) -> tuple[
         f"📦 Tarif: {tariff.name}",
         f"📅 Tugash sanasi: {expires_label}",
         "",
-        f"👥 Joriy oy foydalanuvchilari: {unique_users} ta",
-        f"💰 Joriy oy hosting narxi: {int(hosting_price)} so'm",
-        f"💳 Joriy oy to'lovi: {payment_label}",
+        f"👥 Joriy davr foydalanuvchilari: {unique_users} ta",
+        f"💰 Hosting narxi: haftasiga {int(weekly_price)} so'm / oyiga {int(monthly_price)} so'm",
+        f"💳 Hosting to'lovi: {payment_label}",
     ]
     return "\n".join(lines), payment_status
 
 
-def _bot_detail_keyboard(bot_id: int, payment_status: PaymentStatus | None) -> InlineKeyboardMarkup:
+def _bot_detail_keyboard(bot_id: int, bot_status: BotStatus, payment_status: PaymentStatus | None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    if payment_status in (None, PaymentStatus.REJECTED):
-        builder.button(text="💳 To'lov cheki yuborish", callback_data=f"pay_hosting:{bot_id}")
-    builder.button(text="⬆️ Tarifni oshirish", callback_data=f"pay_upgrade:{bot_id}")
+    if bot_status == BotStatus.SUSPENDED:
+        # SUSPENDED — tarif muddati tugab, bot limitidan oshgani uchun
+        # to'xtatilgan; buni hosting to'lovi emas, faqat tarifni oshirish
+        # (bot limitini ko'paytirish) tiklaydi.
+        builder.button(text="⬆️ Tarifni oshirish", callback_data=f"pay_upgrade:{bot_id}")
+    else:
+        if payment_status in (None, PaymentStatus.REJECTED):
+            builder.button(text="💳 To'lov cheki yuborish", callback_data=f"pay_hosting:{bot_id}")
+        builder.button(text="⬆️ Tarifni oshirish", callback_data=f"pay_upgrade:{bot_id}")
     builder.button(text="⬅️ Orqaga", callback_data="my_bots_back")
     builder.adjust(1)
     return builder.as_markup()
@@ -579,10 +595,12 @@ def build_momo_dispatcher() -> Dispatcher:
             await callback.answer(f"Xatolik: {exc}", show_alert=True)
             return
 
-        await callback.message.edit_text(text, reply_markup=_bot_detail_keyboard(bot_id, payment_status))
+        await callback.message.edit_text(
+            text, reply_markup=_bot_detail_keyboard(bot_id, bot_row.status, payment_status)
+        )
         await callback.answer()
 
-    # --- 💳 To'lov cheki yuborish (oylik hosting) ---
+    # --- 💳 To'lov cheki yuborish (haftalik yoki oylik hosting) ---
 
     @router.callback_query(F.data.startswith("pay_hosting:"))
     async def on_pay_hosting(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
@@ -592,28 +610,50 @@ def build_momo_dispatcher() -> Dispatcher:
             await callback.answer("Bot topilmadi.", show_alert=True)
             return
 
-        status = await hosting_payment_status_this_month(session, bot_id)
+        status, _, _ = await get_hosting_coverage(session, bot_id)
         if status in (PaymentStatus.PENDING, PaymentStatus.APPROVED):
             hint = "kutilmoqda" if status == PaymentStatus.PENDING else "allaqachon to'langan"
-            await callback.answer(f"Bu oy uchun to'lov {hint}.", show_alert=True)
+            await callback.answer(f"Bu davr uchun to'lov {hint}.", show_alert=True)
             return
+
+        unique_users = await get_unique_user_count(session, bot_id)
+        weekly_price = await calculate_hosting_price(session, bot_id, unique_users, BillingPeriod.WEEKLY)
+        monthly_price = await calculate_hosting_price(session, bot_id, unique_users, BillingPeriod.MONTHLY)
 
         await state.clear()
         await state.update_data(payment_bot_id=bot_id)
-        await state.set_state(PaymentStates.waiting_for_hosting_receipt)
+
+        kb = InlineKeyboardBuilder()
+        kb.button(text=f"📅 Haftalik — {int(weekly_price)} so'm", callback_data="hosting_period:weekly")
+        kb.button(text=f"🗓 Oylik — {int(monthly_price)} so'm", callback_data="hosting_period:monthly")
+        kb.button(text="⬅️ Orqaga", callback_data=f"bot_detail:{bot_id}")
+        kb.adjust(1)
+
+        await callback.message.edit_text(
+            "Qaysi davr uchun to'lamoqchisiz?",
+            reply_markup=kb.as_markup(),
+        )
         await callback.answer()
-        await callback.message.answer("To'lov chekining skrinshotini shu yerga RASM qilib yuboring:")
+
+    @router.callback_query(F.data.startswith("hosting_period:"))
+    async def on_hosting_period_chosen(callback: CallbackQuery, state: FSMContext) -> None:
+        billing_period = BillingPeriod(callback.data.split(":", 1)[1])
+        await state.update_data(hosting_billing_period=billing_period.value)
+        await state.set_state(PaymentStates.waiting_for_hosting_receipt)
+        await callback.message.edit_text("To'lov chekining skrinshotini shu yerga RASM qilib yuboring:")
+        await callback.answer()
 
     @router.message(PaymentStates.waiting_for_hosting_receipt, F.photo)
     async def on_hosting_receipt(message: Message, state: FSMContext, session: AsyncSession, bot: AiogramBot) -> None:
         data = await state.get_data()
         bot_id = data.get("payment_bot_id")
+        billing_period = BillingPeriod(data.get("hosting_billing_period"))
         file_id = message.photo[-1].file_id
 
         try:
-            _, amount = await submit_hosting_payment(session, bot_id, file_id)
+            _, amount = await submit_hosting_payment(session, bot_id, billing_period, file_id)
         except HostingPaymentAlreadyExistsError:
-            await message.answer("Bu oy uchun to'lov allaqachon yuborilgan.")
+            await message.answer("Bu davr uchun to'lov allaqachon yuborilgan.")
             await state.clear()
             return
         except LimitExceededError as exc:
@@ -622,10 +662,12 @@ def build_momo_dispatcher() -> Dispatcher:
             return
 
         await state.clear()
+        period_word = "Haftalik" if billing_period == BillingPeriod.WEEKLY else "Oylik"
         await message.answer(
-            f"✅ Chekingiz qabul qilindi ({int(amount)} so'm). Admin ko'rib chiqqach xabar beriladi."
+            f"✅ Chekingiz qabul qilindi ({period_word.lower()}, {int(amount)} so'm). "
+            "Admin ko'rib chiqqach xabar beriladi."
         )
-        await _notify_admins_new_payment(session, bot, bot_id, "Oylik hosting to'lovi", amount, file_id)
+        await _notify_admins_new_payment(session, bot, bot_id, f"{period_word} hosting to'lovi", amount, file_id)
 
     @router.message(PaymentStates.waiting_for_hosting_receipt)
     async def on_hosting_receipt_invalid(message: Message) -> None:
