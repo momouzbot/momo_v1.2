@@ -9,16 +9,20 @@ import datetime
 from sqlalchemy import Date, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, IDMixin, PaymentKind, PaymentStatus, TariffCode, TimestampMixin
+from app.models.base import Base, BillingPeriod, IDMixin, PaymentKind, PaymentStatus, TariffCode, TimestampMixin
 
 
 class HostingPayment(Base, IDMixin, TimestampMixin):
-    """hosting_payments — oylik hosting to'lovlari (bot_id, oy, summa, holat)."""
+    """hosting_payments — hosting to'lovlari (bot_id, davr turi, davr boshlanishi, summa, holat).
+
+    Mijoz haftalik yoki oylik to'lashni tanlaydi (billing_period) — narx va
+    davr uzunligi shunga qarab farq qiladi (TZ narx jadvali yangilanishi)."""
 
     __tablename__ = "hosting_payments"
 
     bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id", ondelete="CASCADE"), nullable=False)
-    period_month: Mapped[datetime.date] = mapped_column(Date, nullable=False)  # oyning 1-sanasi bilan belgilanadi
+    billing_period: Mapped[BillingPeriod] = mapped_column(nullable=False)
+    period_start: Mapped[datetime.date] = mapped_column(Date, nullable=False)  # davr boshlangan kun
     amount: Mapped[Numeric] = mapped_column(Numeric(12, 2), nullable=False)     # 6.3-formula bo'yicha hisoblangan
     status: Mapped[PaymentStatus] = mapped_column(default=PaymentStatus.PENDING, nullable=False)
 
