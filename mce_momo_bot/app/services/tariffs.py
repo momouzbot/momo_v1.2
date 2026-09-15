@@ -57,14 +57,23 @@ def _parse_description(raw: str) -> str:
     return text
 
 
+def _parse_grace_period_days(raw: str) -> int:
+    text = raw.strip().lower()
+    if text in ("0", "yoq", "yo'q", "-"):
+        return 0
+    return _parse_positive_int(raw)
+
+
 # Admin panelda tahrirlanadigan maydonlar: {ustun_nomi: {ko'rsatiladigan nom, validator}}
 TARIFF_FIELDS: dict[str, dict] = {
-    "base_hosting_price": {"label": "Hosting narxi (oyiga)", "parser": _parse_non_negative_decimal},
+    "base_hosting_price": {"label": "Oylik hosting narxi", "parser": _parse_non_negative_decimal},
+    "weekly_hosting_price": {"label": "Haftalik hosting narxi", "parser": _parse_non_negative_decimal},
     "upgrade_price": {"label": "Tarifga o'tish narxi", "parser": _parse_non_negative_decimal},
     "bot_limit": {"label": "Bot soni limiti", "parser": _parse_positive_int},
     "edit_limit_per_day": {"label": "Kunlik tahrir limiti", "parser": _parse_positive_int},
     "user_threshold": {"label": "Foydalanuvchi chegarasi (narx koeffitsienti uchun)", "parser": _parse_positive_int},
     "duration_days": {"label": "Muddat, kun (0 = muddatsiz)", "parser": _parse_duration_days},
+    "grace_period_days": {"label": "Muddat tugagach imtiyoz kuni (0 = darhol)", "parser": _parse_grace_period_days},
     "description": {"label": "Tavsif (ta'rif tanlashda ko'rinadi)", "parser": _parse_description},
 }
 
