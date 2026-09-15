@@ -12,7 +12,7 @@ import pytz
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.base import BotStatus, TariffCode
+from app.models.base import BillingPeriod, BotStatus, TariffCode
 from app.models.bot import Bot as BotModel
 from app.models.bot import BotTariff, EditLog
 from app.models.tariff import Tariff
@@ -193,11 +193,13 @@ async def check_and_increment_edit_limit(session: AsyncSession, bot_id: int) -> 
     await session.commit()
 
 
-async def calculate_hosting_price(session: AsyncSession, bot_id: int, unique_user_count: int) -> float:
+async def calculate_hosting_price(
+    session: AsyncSession, bot_id: int, unique_user_count: int, billing_period: BillingPeriod
+) -> float:
     """
     1000 user chegarasi formulasi (TZ 6.3):
         koeffitsient = floor(user_soni / 1000) + 1
-        narx = base_hosting_price * koeffitsient
+        narx = (haftalik yoki oylik bazaviy narx) * koeffitsient
 
     MUHIM: narx botning O'ZINING tarifi emas, balki mijozning AMALDAGI (eng
     yuqori) tarifi bo'yicha hisoblanadi — Premium mijozning barcha botlari
@@ -210,7 +212,8 @@ async def calculate_hosting_price(session: AsyncSession, bot_id: int, unique_use
 
     tariff = await get_owner_effective_tariff(session, owner_id)
     coefficient = (unique_user_count // tariff.user_threshold) + 1
-    return float(tariff.base_hosting_price) * coefficient
+    base_price = tariff.weekly_hosting_price if billing_period == BillingPeriod.WEEKLY else tariff.base_hosting_price
+    return float(base_price) * coefficient
 
 
 async def get_unique_user_count(session: AsyncSession, bot_id: int) -> int:
