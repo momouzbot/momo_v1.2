@@ -13,10 +13,12 @@ Bot egasi uchun (faqat owner_telegram_id mos kelsa):
     /kino_ochirish <kod>   — kinoni o'chirish (tasdiqlash so'raladi)
     /bekor                 — joriy jarayonni (qo'shish) bekor qilish
 
-Kunlik qo'shish limiti tarif jadvalidan olinadi (Tariff.edit_limit_per_day,
-TZ 6.2-bo'lim) — har bir MUVAFFAQIYATLI qo'shishda +1 hisoblanadi. Bu limit
-serverni ortiqcha yuklanishdan himoya qilish uchun ham kerak (bepul tarifdagi
-mijozlar cheksiz fayl yuklab, xotira/diskni band qilib qo'ymasligi uchun).
+Kunlik kino qo'shish limiti — 10/kun, MIJOZNING TARIFIDAN QAT'I NAZAR bir xil
+(kinobot moduli yakuniy tahrir rejasi). Bu Momo tarifining umumiy tahrir
+limitidan (Tariff.edit_limit_per_day) ALOHIDA — app/services/feature_limits.py
+orqali hisoblanadi. Bu limit serverni ortiqcha yuklanishdan himoya qilish
+uchun ham kerak (mijozlar cheksiz fayl yuklab, xotira/diskni band qilib
+qo'ymasligi uchun).
 """
 from __future__ import annotations
 
@@ -36,12 +38,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.movie import Movie
 from app.modules.base import BaseModule
-from app.services.limits import LimitExceededError, check_and_increment_edit_limit
+from app.services.feature_limits import check_and_increment_feature_limit
+from app.services.limits import LimitExceededError
 from app.services.ownership import is_bot_owner
 
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 10
+
+# Kunlik kino qo'shish limiti — hamma mijoz uchun bir xil (tarifga bog'liq emas)
+KINO_QOSHISH_FEATURE_KEY = "kino_qoshish"
+KINO_QOSHISH_DAILY_LIMIT = 10
 
 
 class KinoStates(StatesGroup):
@@ -353,12 +360,14 @@ class KinoModule(BaseModule):
                 file_type, file_id = "document", message.document.file_id
 
             try:
-                await check_and_increment_edit_limit(session, bot_row.id)
+                await check_and_increment_feature_limit(
+                    session, bot_row.id, KINO_QOSHISH_FEATURE_KEY, KINO_QOSHISH_DAILY_LIMIT
+                )
             except LimitExceededError:
                 await state.clear()
                 await message.answer(
-                    "⛔ Bugungi kunlik kino qo'shish limitingiz tugadi.\n"
-                    "Ertaga qayta urinib ko'ring yoki tarifni oshiring."
+                    f"⛔ Bugungi kunlik kino qo'shish limitingiz tugadi ({KINO_QOSHISH_DAILY_LIMIT}/kun).\n"
+                    "Ertaga qayta urinib ko'ring."
                 )
                 return
 
