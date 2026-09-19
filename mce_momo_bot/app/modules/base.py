@@ -52,6 +52,7 @@ class BaseModule(ABC):
         from app.core.channel_settings import register_channel_settings
         from app.core.force_subscribe import register_force_subscribe
         from app.core.spam_filter import register_spam_filter
+        from app.core.sub_admins import register_sub_admins
         from app.core.welcome import register_welcome
 
         # /kanallar — bot egasi majburiy obuna kanallarini o'zi qo'sha/o'chira
@@ -62,6 +63,10 @@ class BaseModule(ABC):
         # /xabar — bot egasi o'z botining barcha foydalanuvchilariga ommaviy
         # xabar yuborishi mumkin (kunlik 1 marta, tarifdan mustaqil).
         register_broadcast(dp, self.bot_row)
+
+        # /moderatorlar — bot egasi yordamchi moderatorlar (sub-admin)
+        # tayinlashi mumkin (bot boshiga maksimum 3 ta).
+        register_sub_admins(dp, self.bot_row)
 
         # MUHIM: middleware doim ulanadi (shart bilan emas) — chunki
         # /kanallar orqali kanal ro'yxati bot ISHGA TUSHGANDAN KEYIN ham
