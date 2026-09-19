@@ -3,7 +3,7 @@ movies — KinoBotModule uchun kino ma'lumotlari (TZ 4.3-bo'lim).
 """
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, IDMixin, TimestampMixin
@@ -23,3 +23,7 @@ class Movie(Base, IDMixin, TimestampMixin):
     file_id: Mapped[str] = mapped_column(String(255), nullable=False)  # Telegram file_id
 
     views: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Premium obuna tizimi — True bo'lsa faqat faol obunachilar ko'ra oladi
+    # (app/services/premium_subscription.py orqali tekshiriladi).
+    is_premium: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
