@@ -40,7 +40,7 @@ from app.models.movie import Movie
 from app.modules.base import BaseModule
 from app.services.feature_limits import check_and_increment_feature_limit
 from app.services.limits import LimitExceededError
-from app.services.ownership import is_bot_owner
+from app.services.ownership import is_bot_owner_or_sub_admin
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ class KinoModule(BaseModule):
                 "Nom bo'yicha qidirish uchun: /qidir <nom>\n"
                 "Top-10 kinolarni ko'rish: /top"
             )
-            if await is_bot_owner(session, bot_row.id, message.from_user.id):
+            if await is_bot_owner_or_sub_admin(session, bot_row.id, message.from_user.id):
                 await message.answer(
                     "🛠 Siz botning egasisiz. Boshqaruv paneli:",
                     reply_markup=_admin_panel_keyboard().as_markup(),
@@ -113,7 +113,7 @@ class KinoModule(BaseModule):
 
         @router.message(Command("panel"))
         async def cmd_panel(message: Message, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, message.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, message.from_user.id):
                 await message.answer("⛔ Bu buyruq faqat bot egasi uchun.")
                 return
             await message.answer("🛠 Boshqaruv paneli:", reply_markup=_admin_panel_keyboard().as_markup())
@@ -180,7 +180,7 @@ class KinoModule(BaseModule):
 
         @router.callback_query(F.data == "kino_admin_add")
         async def on_admin_add(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, callback.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, callback.from_user.id):
                 await callback.answer("⛔ Ruxsat yo'q.", show_alert=True)
                 return
             await callback.answer()
@@ -188,7 +188,7 @@ class KinoModule(BaseModule):
 
         @router.callback_query(F.data.startswith("kino_admin_delete:"))
         async def on_admin_delete_list(callback: CallbackQuery, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, callback.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, callback.from_user.id):
                 await callback.answer("⛔ Ruxsat yo'q.", show_alert=True)
                 return
             page = int(callback.data.split(":", 1)[1])
@@ -197,7 +197,7 @@ class KinoModule(BaseModule):
 
         @router.callback_query(F.data.startswith("kino_admin_del_confirm:"))
         async def on_admin_delete_confirm(callback: CallbackQuery, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, callback.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, callback.from_user.id):
                 await callback.answer("⛔ Ruxsat yo'q.", show_alert=True)
                 return
             code = callback.data.split(":", 1)[1]
@@ -218,7 +218,7 @@ class KinoModule(BaseModule):
 
         @router.callback_query(F.data.startswith("kino_admin_del_do:"))
         async def on_admin_delete_do(callback: CallbackQuery, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, callback.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, callback.from_user.id):
                 await callback.answer("⛔ Ruxsat yo'q.", show_alert=True)
                 return
             code = callback.data.split(":", 1)[1]
@@ -236,7 +236,7 @@ class KinoModule(BaseModule):
 
         @router.callback_query(F.data.startswith("kino_admin_list:"))
         async def on_admin_list(callback: CallbackQuery, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, callback.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, callback.from_user.id):
                 await callback.answer("⛔ Ruxsat yo'q.", show_alert=True)
                 return
             page = int(callback.data.split(":", 1)[1])
@@ -245,7 +245,7 @@ class KinoModule(BaseModule):
 
         @router.callback_query(F.data == "kino_admin_stats")
         async def on_admin_stats(callback: CallbackQuery, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, callback.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, callback.from_user.id):
                 await callback.answer("⛔ Ruxsat yo'q.", show_alert=True)
                 return
 
@@ -279,7 +279,7 @@ class KinoModule(BaseModule):
 
         @router.message(Command("kino_qoshish"))
         async def cmd_add_movie_start(message: Message, state: FSMContext, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, message.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, message.from_user.id):
                 await message.answer("⛔ Bu buyruq faqat bot egasi uchun.")
                 return
             await _start_add_flow(message, state)
@@ -407,7 +407,7 @@ class KinoModule(BaseModule):
 
         @router.message(Command("kino_ochirish"))
         async def cmd_delete_movie(message: Message, command: CommandObject, session: AsyncSession) -> None:
-            if not await is_bot_owner(session, bot_row.id, message.from_user.id):
+            if not await is_bot_owner_or_sub_admin(session, bot_row.id, message.from_user.id):
                 await message.answer("⛔ Bu buyruq faqat bot egasi uchun.")
                 return
 
