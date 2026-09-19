@@ -38,6 +38,7 @@ from app.config import settings
 from app.dispatcher.middleware import DBSessionMiddleware
 from app.models.base import BillingPeriod, BotStatus, ModuleType, PaymentStatus, TariffCode
 from app.models.bot import Bot as BotModel
+from app.models.broadcast import BroadcastLog
 from app.models.module import Module
 from app.models.payment import Payment
 from app.models.tariff import Tariff
@@ -46,6 +47,7 @@ from app.services.limits import (
     LimitExceededError,
     TARIFF_RANK,
     calculate_hosting_price,
+    check_and_increment_edit_limit,
     get_owner_effective_bot_tariff,
     get_owner_effective_tariff,
     get_tariff_by_code,
@@ -346,6 +348,7 @@ def _bot_detail_keyboard(bot_id: int, bot_status: BotStatus, payment_status: Pay
         if payment_status in (None, PaymentStatus.REJECTED):
             builder.button(text="💳 To'lov cheki yuborish", callback_data=f"pay_hosting:{bot_id}")
         builder.button(text="⬆️ Tarifni oshirish", callback_data=f"pay_upgrade:{bot_id}")
+    builder.button(text="📨 Xabarlar tarixi", callback_data=f"broadcast_stats:{bot_id}")
     builder.button(text="⬅️ Orqaga", callback_data="my_bots_back")
     builder.adjust(1)
     return builder.as_markup()
@@ -598,6 +601,43 @@ def build_momo_dispatcher() -> Dispatcher:
         await callback.message.edit_text(
             text, reply_markup=_bot_detail_keyboard(bot_id, bot_row.status, payment_status)
         )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("broadcast_stats:"))
+    async def on_broadcast_stats(callback: CallbackQuery, session: AsyncSession) -> None:
+        bot_id = int(callback.data.split(":", 1)[1])
+        bot_row = await _get_owned_bot_or_none(session, callback.from_user.id, bot_id)
+        if bot_row is None:
+            await callback.answer("Bot topilmadi.", show_alert=True)
+            return
+
+        try:
+            await check_and_increment_edit_limit(session, bot_id)
+        except LimitExceededError as exc:
+            await callback.answer(f"Kunlik tahrirlash limitiga yetdingiz: {exc}", show_alert=True)
+            return
+
+        result = await session.execute(
+            select(BroadcastLog).where(BroadcastLog.bot_id == bot_id).order_by(BroadcastLog.created_at.desc()).limit(5)
+        )
+        logs = result.scalars().all()
+
+        if not logs:
+            text = "📨 Bu bot hali ommaviy xabar yubormagan."
+        else:
+            lines = ["📨 So'nggi ommaviy xabarlar:\n"]
+            for log in logs:
+                date_label = log.created_at.strftime("%Y-%m-%d %H:%M")
+                lines.append(
+                    f"• {date_label} — {log.success_count}/{log.total_recipients} yetib bordi "
+                    f"({log.failed_count} yetmadi)"
+                )
+            text = "\n".join(lines)
+
+        kb = InlineKeyboardBuilder()
+        kb.button(text="⬅️ Orqaga", callback_data=f"bot_detail:{bot_id}")
+        kb.adjust(1)
+        await callback.message.edit_text(text, reply_markup=kb.as_markup())
         await callback.answer()
 
     # --- 💳 To'lov cheki yuborish (haftalik yoki oylik hosting) ---
