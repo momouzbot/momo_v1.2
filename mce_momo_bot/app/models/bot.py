@@ -13,6 +13,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
 )
@@ -47,9 +48,10 @@ class Bot(Base, IDMixin, TimestampMixin):
 
     # --- Core (umumiy) sozlamalar — TZ 3.2-bo'lim ---
     force_subscribe_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    force_subscribe_channels: Mapped[list[str] | None] = mapped_column(
-        String, nullable=True
-    )  # JSON/CSV ko'rinishida kanal ro'yxati; keyinchalik alohida jadvalga chiqarilishi mumkin
+    # Vergul bilan ajratilgan kanal ro'yxati (masalan "@kanal1,@kanal2") —
+    # app/core/force_subscribe.py::parse_force_subscribe_channels() orqali
+    # o'qiladi, app/core/channel_settings.py orqali bot egasi tahrirlaydi.
+    force_subscribe_channels: Mapped[str | None] = mapped_column(String, nullable=True)
     captcha_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     welcome_message: Mapped[str | None] = mapped_column(String, nullable=True)
     spam_filter_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -57,6 +59,12 @@ class Bot(Base, IDMixin, TimestampMixin):
     # Murojaat/buyurtma kabi hodisalarni forward qilish uchun admin guruh/kanal ID'si
     # (SupportModule, ShopModule va boshqalar tomonidan ishlatiladi).
     admin_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    # --- Premium obuna tizimi (KinoBotModule, mijozning O'Z tomoshabinlari
+    # to'laydigan ichki xizmat — Momo to'lov tizimidan butunlay alohida) ---
+    premium_subscription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    premium_subscription_price: Mapped[Numeric] = mapped_column(Numeric(12, 2), default=0, nullable=False)
+    premium_subscription_duration_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
 
     # --- Tashqi hostingdagi botlar uchun (masalan GOT Game) ---
     # Bot boshqa serverda ishlaydi, Momo faqat tarif/trafik nazoratini oladi:
