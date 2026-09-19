@@ -47,13 +47,32 @@ class BaseModule(ABC):
         majburiy obuna, captcha, xush kelibsiz, spam filtri.
         Bot sozlamalarida yoqilgan bo'lsa faollashadi.
         """
+        from app.core.broadcast import register_broadcast
         from app.core.captcha import register_captcha
+        from app.core.channel_settings import register_channel_settings
         from app.core.force_subscribe import register_force_subscribe
         from app.core.spam_filter import register_spam_filter
         from app.core.welcome import register_welcome
 
-        if self.bot_row.force_subscribe_enabled:
-            register_force_subscribe(dp, self.bot_row)
+        # /kanallar — bot egasi majburiy obuna kanallarini o'zi qo'sha/o'chira
+        # oladi (doim ulanadi, force_subscribe_enabled bo'lishi shart emas —
+        # aks holda bo'sh holatdan birinchi kanalni qo'shib bo'lmas edi).
+        register_channel_settings(dp, self.bot_row)
+
+        # /xabar — bot egasi o'z botining barcha foydalanuvchilariga ommaviy
+        # xabar yuborishi mumkin (kunlik 1 marta, tarifdan mustaqil).
+        register_broadcast(dp, self.bot_row)
+
+        # MUHIM: middleware doim ulanadi (shart bilan emas) — chunki
+        # /kanallar orqali kanal ro'yxati bot ISHGA TUSHGANDAN KEYIN ham
+        # o'zgarishi mumkin (owner kanal qo'shishi/o'chirishi mumkin).
+        # Agar bu yerda `if force_subscribe_enabled` sharti bilan ulansa,
+        # bot birinchi yuklanganda kanal bo'lmasa, middleware umuman
+        # ro'yxatdan o'tmay qoladi va owner keyinroq kanal qo'shsa ham bot
+        # qayta ishga tushmaguncha ishlamay qoladi. Middlewarening o'zi
+        # kanal ro'yxati bo'shligini tekshirib, bo'sh bo'lsa hech narsa
+        # qilmaydi — shuning uchun doim ulash xavfsiz va arzon.
+        register_force_subscribe(dp, self.bot_row)
         if self.bot_row.captcha_enabled:
             register_captcha(dp, self.bot_row)  # welcome_message bo'lsa, shu ichida ham yuboriladi
         elif self.bot_row.welcome_message:
