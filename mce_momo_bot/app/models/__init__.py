@@ -5,6 +5,7 @@ Base.metadata.create_all() to'g'ri ishlashi uchun zarur.
 from app.models.base import Base
 from app.models.appeal import Appeal
 from app.models.bot import Bot, BotTariff, BotUser, EditLog
+from app.models.broadcast import BroadcastLog
 from app.models.feature_usage import FeatureUsageLog
 from app.models.movie import Movie
 from app.models.custom import CustomButton, CustomCommand
@@ -22,6 +23,7 @@ __all__ = [
     "BotTariff",
     "EditLog",
     "FeatureUsageLog",
+    "BroadcastLog",
     "Tariff",
     "HostingPayment",
     "TariffUpgrade",
