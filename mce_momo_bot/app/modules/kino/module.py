@@ -19,9 +19,15 @@ limitidan (Tariff.edit_limit_per_day) ALOHIDA — app/services/feature_limits.py
 orqali hisoblanadi. Bu limit serverni ortiqcha yuklanishdan himoya qilish
 uchun ham kerak (mijozlar cheksiz fayl yuklab, xotira/diskni band qilib
 qo'ymasligi uchun).
+Premium obuna tizimi (bot egasining O'Z tomoshabinlari to'laydigan ichki
+xizmat, Momo to'lov tizimidan mustaqil):
+    /premium_narx  — bot egasi uchun: narx/muddat belgilash, yoqish/o'chirish
+    /premium       — oddiy foydalanuvchi uchun: obuna bo'lish (chek yuborish)
+    /premium_tolovlar — bot egasi uchun: kutilayotgan cheklarni ko'rish
 """
 from __future__ import annotations
 
+import datetime
 import logging
 
 from aiogram import Bot as AiogramBot
@@ -37,10 +43,22 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.movie import Movie
+from app.models.user import User
 from app.modules.base import BaseModule
 from app.services.feature_limits import check_and_increment_feature_limit
-from app.services.limits import LimitExceededError
-from app.services.ownership import is_bot_owner_or_sub_admin
+from app.services.limits import LimitExceededError, check_and_increment_edit_limit
+from app.services.ownership import is_bot_owner, is_bot_owner_or_sub_admin
+from app.services.premium_subscription import (
+    PremiumPaymentNotFoundError,
+    approve_premium_payment,
+    get_premium_expiry,
+    get_premium_settings,
+    has_active_premium,
+    list_pending_premium_payments,
+    reject_premium_payment,
+    set_premium_settings,
+    submit_premium_payment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +73,22 @@ class KinoStates(StatesGroup):
     waiting_code = State()
     waiting_title = State()
     waiting_category = State()
+    waiting_premium_choice = State()
     waiting_media = State()
+
+
+class PremiumStates(StatesGroup):
+    """Premium obuna tizimi — TZ: "kinobot moduli yakuniy tahrir rejasi"."""
+
+    waiting_for_price = State()       # bot egasi: narx kiritish
+    waiting_for_duration = State()    # bot egasi: muddat (kun) kiritish
+    waiting_for_receipt = State()     # oddiy foydalanuvchi: chek yuborish
 
 
 def _movie_caption(movie: Movie) -> str:
     category = f"\n🏷 Kategoriya: {movie.category}" if movie.category else ""
-    return f"🎬 {movie.title}{category}\n🔑 Kod: {movie.code}\n👁 Ko'rishlar: {movie.views}"
+    premium = "\n⭐ Premium kino" if movie.is_premium else ""
+    return f"🎬 {movie.title}{category}{premium}\n🔑 Kod: {movie.code}\n👁 Ko'rishlar: {movie.views}"
 
 
 def _escape_like(value: str) -> str:
@@ -332,21 +360,41 @@ class KinoModule(BaseModule):
                 reply_markup=builder.as_markup(),
             )
 
+        async def _after_category(state: FSMContext) -> tuple[str, object]:
+            """Kategoriyadan keyingi qadamni aniqlaydi — agar Premium obuna
+            yoqilgan bo'lsa, avval "oddiymi yoki premiummi" so'raladi."""
+            if bot_row.premium_subscription_enabled:
+                await state.set_state(KinoStates.waiting_premium_choice)
+                kb = InlineKeyboardBuilder()
+                kb.button(text="🆓 Oddiy", callback_data="kino_premium_no")
+                kb.button(text="⭐ Premium", callback_data="kino_premium_yes")
+                kb.adjust(2)
+                return "Bu kino oddiymi yoki Premium obunachilar uchunmi?", kb.as_markup()
+            await state.update_data(is_premium=False)
+            await state.set_state(KinoStates.waiting_media)
+            return "Endi kino faylini (video yoki hujjat) yuboring:", _cancel_keyboard().as_markup()
+
         @router.callback_query(KinoStates.waiting_category, F.data == "kino_skip_category")
         async def on_category_skip(callback: CallbackQuery, state: FSMContext) -> None:
             await state.update_data(category=None)
-            await state.set_state(KinoStates.waiting_media)
+            text, kb = await _after_category(state)
             await callback.answer()
-            await callback.message.answer(
-                "Endi kino faylini (video yoki hujjat) yuboring:", reply_markup=_cancel_keyboard().as_markup()
-            )
+            await callback.message.answer(text, reply_markup=kb)
 
         @router.message(KinoStates.waiting_category)
         async def on_category_entered(message: Message, state: FSMContext) -> None:
             category = (message.text or "").strip() or None
             await state.update_data(category=category)
+            text, kb = await _after_category(state)
+            await message.answer(text, reply_markup=kb)
+
+        @router.callback_query(KinoStates.waiting_premium_choice, F.data.in_({"kino_premium_no", "kino_premium_yes"}))
+        async def on_premium_choice(callback: CallbackQuery, state: FSMContext) -> None:
+            is_premium = callback.data == "kino_premium_yes"
+            await state.update_data(is_premium=is_premium)
             await state.set_state(KinoStates.waiting_media)
-            await message.answer(
+            await callback.answer()
+            await callback.message.answer(
                 "Endi kino faylini (video yoki hujjat) yuboring:", reply_markup=_cancel_keyboard().as_markup()
             )
 
@@ -379,6 +427,7 @@ class KinoModule(BaseModule):
                 file_type=file_type,
                 file_id=file_id,
                 views=0,
+                is_premium=data.get("is_premium", False),
             )
             session.add(movie)
             try:
@@ -431,6 +480,212 @@ class KinoModule(BaseModule):
                 f"«{movie.title}» (kod: {code}) rostdan o'chirilsinmi? Bu amalni qaytarib bo'lmaydi.",
                 reply_markup=builder.as_markup(),
             )
+
+        # ---------------------------------------------------------------
+        # Premium obuna tizimi — bot egasi uchun sozlash
+        # ---------------------------------------------------------------
+
+        @router.message(Command("premium_narx"))
+        async def cmd_premium_price_start(message: Message, state: FSMContext, session: AsyncSession) -> None:
+            if not await is_bot_owner(session, bot_row.id, message.from_user.id):
+                await message.answer("⛔ Bu buyruq faqat bot egasi uchun.")
+                return
+            await state.clear()
+            await state.set_state(PremiumStates.waiting_for_price)
+            await message.answer(
+                f"Joriy narx: {int(bot_row.premium_subscription_price)} so'm "
+                f"({'yoqilgan' if bot_row.premium_subscription_enabled else 'o\u2019chirilgan'}).\n\n"
+                "Yangi narxni so'mda kiriting (0 = Premium obunani butunlay o'chirish):"
+            )
+
+        @router.message(PremiumStates.waiting_for_price)
+        async def on_premium_price_entered(message: Message, state: FSMContext, session: AsyncSession) -> None:
+            raw = (message.text or "").strip()
+            if not raw.isdigit():
+                await message.answer("Iltimos, son kiriting (masalan: 15000 yoki 0):")
+                return
+
+            price = int(raw)
+            if price == 0:
+                try:
+                    await check_and_increment_edit_limit(session, bot_row.id)
+                except LimitExceededError as exc:
+                    await state.clear()
+                    await message.answer(f"⛔ Kunlik tahrirlash limitiga yetdingiz: {exc}")
+                    return
+
+                await set_premium_settings(session, bot_row.id, enabled=False, price=0, duration_days=bot_row.premium_subscription_duration_days)
+                bot_row.premium_subscription_enabled = False
+                bot_row.premium_subscription_price = 0
+                await state.clear()
+                await message.answer("✅ Premium obuna o'chirildi.")
+                return
+
+            await state.update_data(price=price)
+            await state.set_state(PremiumStates.waiting_for_duration)
+            await message.answer(
+                f"Necha kunga (odatiy: {bot_row.premium_subscription_duration_days})? "
+                "Son kiriting yoki /otkazish bilan odatiyni qoldiring:"
+            )
+
+        @router.message(PremiumStates.waiting_for_duration, Command("otkazish"))
+        async def on_premium_duration_default(message: Message, state: FSMContext, session: AsyncSession) -> None:
+            await _finish_premium_settings(message, state, session, bot_row.premium_subscription_duration_days)
+
+        @router.message(PremiumStates.waiting_for_duration)
+        async def on_premium_duration_entered(message: Message, state: FSMContext, session: AsyncSession) -> None:
+            raw = (message.text or "").strip()
+            if not raw.isdigit() or int(raw) <= 0:
+                await message.answer("Iltimos, musbat son kiriting (masalan: 30), yoki /otkazish:")
+                return
+            await _finish_premium_settings(message, state, session, int(raw))
+
+        async def _finish_premium_settings(
+            message: Message, state: FSMContext, session: AsyncSession, duration_days: int
+        ) -> None:
+            try:
+                await check_and_increment_edit_limit(session, bot_row.id)
+            except LimitExceededError as exc:
+                await state.clear()
+                await message.answer(f"⛔ Kunlik tahrirlash limitiga yetdingiz: {exc}")
+                return
+
+            data = await state.get_data()
+            price = data.get("price", 0)
+            updated = await set_premium_settings(session, bot_row.id, enabled=True, price=price, duration_days=duration_days)
+            bot_row.premium_subscription_enabled = updated.premium_subscription_enabled
+            bot_row.premium_subscription_price = updated.premium_subscription_price
+            bot_row.premium_subscription_duration_days = updated.premium_subscription_duration_days
+
+            await state.clear()
+            await message.answer(
+                f"✅ Premium obuna yoqildi: {price} so'm / {duration_days} kun.\n\n"
+                "Kino qo'shishda endi \"Oddiy yoki Premium\" so'raladi."
+            )
+
+        # ---------------------------------------------------------------
+        # Premium obuna tizimi — oddiy foydalanuvchi uchun obuna bo'lish
+        # ---------------------------------------------------------------
+
+        @router.message(Command("premium"))
+        async def cmd_premium_subscribe(message: Message, state: FSMContext, session: AsyncSession) -> None:
+            if not bot_row.premium_subscription_enabled:
+                await message.answer("Bu botda Premium obuna tizimi hozircha yoqilmagan.")
+                return
+
+            expiry = await get_premium_expiry(session, bot_row.id, message.from_user.id)
+            if expiry and expiry >= datetime.date.today():
+                await message.answer(f"✅ Sizda allaqachon faol Premium obuna bor — {expiry.strftime('%Y-%m-%d')} gacha.")
+                return
+
+            await state.clear()
+            await state.set_state(PremiumStates.waiting_for_receipt)
+            await message.answer(
+                f"⭐ Premium obuna narxi: {int(bot_row.premium_subscription_price)} so'm "
+                f"({bot_row.premium_subscription_duration_days} kunga).\n\n"
+                "To'lov chekining skrinshotini shu yerga RASM qilib yuboring."
+            )
+
+        @router.message(PremiumStates.waiting_for_receipt, F.photo)
+        async def on_premium_receipt(message: Message, state: FSMContext, session: AsyncSession, bot: AiogramBot) -> None:
+            await state.clear()
+            file_id = message.photo[-1].file_id
+            payment = await submit_premium_payment(
+                session, bot_row.id, message.from_user.id, float(bot_row.premium_subscription_price), file_id
+            )
+            await message.answer("✅ Chekingiz qabul qilindi. Tasdiqlangach xabar beramiz.")
+
+            kb = InlineKeyboardBuilder()
+            kb.button(text="✅ Tasdiqlash", callback_data=f"premium_approve:{payment.id}")
+            kb.button(text="❌ Rad etish", callback_data=f"premium_reject:{payment.id}")
+            kb.adjust(2)
+
+            owner_result = await session.execute(select(User.telegram_id).where(User.id == bot_row.owner_id))
+            owner_telegram_id = owner_result.scalar_one_or_none()
+            if owner_telegram_id is None:
+                logger.warning("Bot egasi topilmadi: bot_id=%s", bot_row.id)
+                return
+            try:
+                await bot.send_photo(
+                    owner_telegram_id,
+                    file_id,
+                    caption=(
+                        f"⭐ Yangi Premium obuna cheki\n\n"
+                        f"Foydalanuvchi: {message.from_user.full_name} (id: {message.from_user.id})\n"
+                        f"Summa: {int(payment.amount)} so'm"
+                    ),
+                    reply_markup=kb.as_markup(),
+                )
+            except Exception:
+                logger.exception("Premium chek haqida bot egasiga xabar yuborishda xato")
+
+        @router.message(PremiumStates.waiting_for_receipt)
+        async def on_premium_receipt_invalid(message: Message) -> None:
+            await message.answer("Iltimos, chekning skrinshotini RASM ko'rinishida yuboring.")
+
+        @router.callback_query(F.data.startswith("premium_approve:"))
+        async def on_premium_approve(callback: CallbackQuery, session: AsyncSession, bot: AiogramBot) -> None:
+            if not await is_bot_owner(session, bot_row.id, callback.from_user.id):
+                await callback.answer("Bu amal faqat bot egasi uchun.", show_alert=True)
+                return
+            payment_id = int(callback.data.split(":", 1)[1])
+            try:
+                payment = await approve_premium_payment(session, payment_id)
+            except PremiumPaymentNotFoundError:
+                await callback.answer("To'lov topilmadi.", show_alert=True)
+                return
+
+            expiry = await get_premium_expiry(session, bot_row.id, payment.telegram_user_id)
+            try:
+                await bot.send_message(
+                    payment.telegram_user_id,
+                    f"✅ Premium obunangiz tasdiqlandi! Muddati: {expiry.strftime('%Y-%m-%d')} gacha.",
+                )
+            except Exception:
+                logger.exception("Foydalanuvchiga premium tasdiqlash xabarini yuborishda xato")
+
+            await callback.answer("Tasdiqlandi.")
+            old_caption = callback.message.caption or ""
+            await callback.message.edit_caption(caption=f"✅ TASDIQLANDI\n\n{old_caption}", reply_markup=None)
+
+        @router.callback_query(F.data.startswith("premium_reject:"))
+        async def on_premium_reject(callback: CallbackQuery, session: AsyncSession, bot: AiogramBot) -> None:
+            if not await is_bot_owner(session, bot_row.id, callback.from_user.id):
+                await callback.answer("Bu amal faqat bot egasi uchun.", show_alert=True)
+                return
+            payment_id = int(callback.data.split(":", 1)[1])
+            try:
+                payment = await reject_premium_payment(session, payment_id)
+            except PremiumPaymentNotFoundError:
+                await callback.answer("To'lov topilmadi.", show_alert=True)
+                return
+
+            try:
+                await bot.send_message(
+                    payment.telegram_user_id,
+                    "❌ Premium obuna chekingiz rad etildi. Qaytadan yuborishingiz mumkin: /premium",
+                )
+            except Exception:
+                logger.exception("Foydalanuvchiga premium rad etish xabarini yuborishda xato")
+
+            await callback.answer("Rad etildi.")
+            old_caption = callback.message.caption or ""
+            await callback.message.edit_caption(caption=f"❌ RAD ETILDI\n\n{old_caption}", reply_markup=None)
+
+        @router.message(Command("premium_tolovlar"))
+        async def cmd_premium_pending(message: Message, session: AsyncSession) -> None:
+            if not await is_bot_owner(session, bot_row.id, message.from_user.id):
+                await message.answer("⛔ Bu buyruq faqat bot egasi uchun.")
+                return
+            pending = await list_pending_premium_payments(session, bot_row.id)
+            if not pending:
+                await message.answer("Kutilayotgan Premium to'lovlar yo'q.")
+                return
+            lines = ["⏳ Kutilayotgan Premium to'lovlar:\n"]
+            for p in pending:
+                lines.append(f"#{p.id} — foydalanuvchi {p.telegram_user_id} — {int(p.amount)} so'm")
+            lines.append("\nHar birini tasdiqlash/rad etish uchun chekning o'zi yuborilgan xabarga qarang.")
+            await message.answer("\n".join(lines))
 
         # ---------------------------------------------------------------
         # Fallback: oddiy matn — kino kodi sifatida qaraladi
@@ -535,6 +790,16 @@ async def _send_movie_by_code(
     movie = result.scalar_one_or_none()
     if movie is None:
         return False
+
+    if movie.is_premium and not await has_active_premium(session, bot_id, chat_id):
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"⭐ «{movie.title}» — Premium kino, faqat obunachilar ko'ra oladi.\n\n"
+                "Obuna bo'lish uchun /premium yuboring."
+            ),
+        )
+        return True
 
     # Atomik increment — parallel so'rovlarda hisoblagich yo'qolib qolmasligi uchun
     # (avval "views = views + 1" Python darajasida hisoblanardi, race condition xavfi bor edi).
