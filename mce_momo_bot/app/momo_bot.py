@@ -67,10 +67,11 @@ from app.services.payments import (
     submit_hosting_payment,
     submit_tariff_upgrade,
 )
+from app.services.crypto import decrypt_token
 from app.services.registration import AlreadyRegisteredError, register_bot_for_owner
 from app.services.stats import get_platform_stats
 from app.services.tariffs import TARIFF_FIELDS, InvalidTariffFieldError, update_tariff_field
-from app.services.telegram import InvalidTokenError
+from app.services.telegram import InvalidTokenError, set_webhook
 from app.services.users import complete_registration, get_or_create_user
 
 logger = logging.getLogger(__name__)
@@ -349,6 +350,12 @@ def _bot_detail_keyboard(bot_id: int, bot_status: BotStatus, payment_status: Pay
             builder.button(text="💳 To'lov cheki yuborish", callback_data=f"pay_hosting:{bot_id}")
         builder.button(text="⬆️ Tarifni oshirish", callback_data=f"pay_upgrade:{bot_id}")
     builder.button(text="📨 Xabarlar tarixi", callback_data=f"broadcast_stats:{bot_id}")
+    if bot_status == BotStatus.ACTIVE:
+        # Bot "faol" deb ko'rsatilsa ham, Telegram webhookni o'z tomonidan
+        # (masalan uzoq vaqt xato qaytargani uchun) o'chirib qo'ygan bo'lishi
+        # mumkin — bu tugma orqali mijoz o'zi, hech kimni kutmasdan qayta
+        # ulay oladi.
+        builder.button(text="🔄 Webhookni qayta ulash", callback_data=f"restart_webhook:{bot_id}")
     builder.button(text="⬅️ Orqaga", callback_data="my_bots_back")
     builder.adjust(1)
     return builder.as_markup()
@@ -639,6 +646,24 @@ def build_momo_dispatcher() -> Dispatcher:
         kb.adjust(1)
         await callback.message.edit_text(text, reply_markup=kb.as_markup())
         await callback.answer()
+
+    @router.callback_query(F.data.startswith("restart_webhook:"))
+    async def on_restart_webhook(callback: CallbackQuery, session: AsyncSession) -> None:
+        bot_id = int(callback.data.split(":", 1)[1])
+        bot_row = await _get_owned_bot_or_none(session, callback.from_user.id, bot_id)
+        if bot_row is None:
+            await callback.answer("Bot topilmadi.", show_alert=True)
+            return
+
+        try:
+            token = decrypt_token(bot_row.token_encrypted)
+            await set_webhook(token, bot_row.telegram_bot_id)
+        except Exception:
+            logger.exception("Webhookni qayta ulashda xato: bot_id=%s", bot_row.telegram_bot_id)
+            await callback.answer("Xatolik yuz berdi. Birozdan keyin qayta urinib ko'ring.", show_alert=True)
+            return
+
+        await callback.answer("✅ Webhook qayta ulandi. Botingizga /start yuborib tekshiring.", show_alert=True)
 
     # --- 💳 To'lov cheki yuborish (haftalik yoki oylik hosting) ---
 
