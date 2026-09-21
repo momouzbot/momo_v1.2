@@ -69,9 +69,10 @@ from app.services.payments import (
 )
 from app.services.crypto import decrypt_token
 from app.services.registration import AlreadyRegisteredError, register_bot_for_owner
+from app.services.platform_settings import format_payment_details, get_platform_settings, update_payment_details
 from app.services.stats import get_platform_stats
 from app.services.tariffs import TARIFF_FIELDS, InvalidTariffFieldError, update_tariff_field
-from app.services.telegram import InvalidTokenError, set_webhook
+from app.services.telegram import InvalidTokenError, delete_webhook, set_webhook
 from app.services.users import complete_registration, get_or_create_user
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,14 @@ class AdminTariffStates(StatesGroup):
     waiting_for_field_value = State()
 
 
+class AdminPaymentDetailsStates(StatesGroup):
+    """Admin panel — to'lov rekvizitlarini (karta) tahrirlash oqimi."""
+
+    waiting_for_card_number = State()
+    waiting_for_card_holder = State()
+    waiting_for_instructions = State()
+
+
 # -----------------------------------------------------------------
 # Klaviatura yordamchilari
 # -----------------------------------------------------------------
@@ -176,6 +185,7 @@ def _admin_main_menu_keyboard(pending_count: int) -> InlineKeyboardMarkup:
     builder.button(text=payments_label, callback_data="admin_menu:payments")
     builder.button(text="💰 Ta'riflar", callback_data="admin_menu:tariffs")
     builder.button(text="📊 Statistika", callback_data="admin_menu:stats")
+    builder.button(text="💳 To'lov rekvizitlari", callback_data="admin_menu:payment_details")
     builder.button(text="✖️ Yopish", callback_data="admin_menu:close")
     builder.adjust(1)
     return builder.as_markup()
@@ -285,7 +295,9 @@ async def _get_owned_bot_or_none(session: AsyncSession, telegram_id: int, bot_id
 
 
 async def _my_bots_keyboard(session: AsyncSession, user: User) -> InlineKeyboardMarkup | None:
-    result = await session.execute(select(BotModel).where(BotModel.owner_id == user.id))
+    result = await session.execute(
+        select(BotModel).where(BotModel.owner_id == user.id, BotModel.status != BotStatus.DELETED)
+    )
     bots = result.scalars().all()
     if not bots:
         return None
@@ -356,6 +368,7 @@ def _bot_detail_keyboard(bot_id: int, bot_status: BotStatus, payment_status: Pay
         # mumkin — bu tugma orqali mijoz o'zi, hech kimni kutmasdan qayta
         # ulay oladi.
         builder.button(text="🔄 Webhookni qayta ulash", callback_data=f"restart_webhook:{bot_id}")
+    builder.button(text="🗑 Botni o'chirish", callback_data=f"delete_bot_confirm:{bot_id}")
     builder.button(text="⬅️ Orqaga", callback_data="my_bots_back")
     builder.adjust(1)
     return builder.as_markup()
@@ -663,7 +676,63 @@ def build_momo_dispatcher() -> Dispatcher:
             await callback.answer("Xatolik yuz berdi. Birozdan keyin qayta urinib ko'ring.", show_alert=True)
             return
 
-        await callback.answer("✅ Webhook qayta ulandi. Botingizga /start yuborib tekshiring.", show_alert=True)
+        await callback.answer("✅ Webhook qayta ulandi.", show_alert=True)
+        await callback.message.answer(
+            "✅ Webhook qayta ulandi. Botingizga /start yuborib tekshiring.\n\n"
+            "❗️Agar bot hali ham javob bermasa, ehtimol bot tokeningiz BotFather "
+            "orqali bekor qilingan (revoke qilingan) yoki boshqa sababdan yaroqsiz "
+            "bo'lib qolgan. Bunday holatda pastdagi \"🗑 Botni o'chirish\" tugmasi "
+            "orqali eski botni o'chirib, BotFather'dan yangi token olib, "
+            "\"➕ Yangi bot\" orqali qaytadan ulashingiz mumkin."
+        )
+
+    # --- 🗑 Botni o'chirish ---
+
+    @router.callback_query(F.data.startswith("delete_bot_confirm:"))
+    async def on_delete_bot_confirm(callback: CallbackQuery, session: AsyncSession) -> None:
+        bot_id = int(callback.data.split(":", 1)[1])
+        bot_row = await _get_owned_bot_or_none(session, callback.from_user.id, bot_id)
+        if bot_row is None:
+            await callback.answer("Bot topilmadi.", show_alert=True)
+            return
+
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Ha, o'chirish", callback_data=f"delete_bot_execute:{bot_id}")
+        kb.button(text="❌ Yo'q, bekor qilish", callback_data=f"bot_detail:{bot_id}")
+        kb.adjust(1)
+        await callback.message.edit_text(
+            f"⚠️ @{bot_row.username} botini o'chirmoqchimisiz?\n\n"
+            "Bu amalni ortga qaytarib bo'lmaydi — bot to'xtaydi va endi ishlamaydi. "
+            "(Kino kabi ma'lumotlaringiz bazada saqlanib qoladi, lekin botning o'zi "
+            "faollashmaydi.)\n\n"
+            "O'chirilgach, shu tarifingiz doirasida darhol yangi bot (yangi token bilan) "
+            "qo'sha olasiz.",
+            reply_markup=kb.as_markup(),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("delete_bot_execute:"))
+    async def on_delete_bot_execute(callback: CallbackQuery, session: AsyncSession) -> None:
+        bot_id = int(callback.data.split(":", 1)[1])
+        bot_row = await _get_owned_bot_or_none(session, callback.from_user.id, bot_id)
+        if bot_row is None:
+            await callback.answer("Bot topilmadi.", show_alert=True)
+            return
+
+        try:
+            token = decrypt_token(bot_row.token_encrypted)
+            await delete_webhook(token)
+        except Exception:
+            logger.exception("Botni o'chirishda webhookni tozalashda xato: bot_id=%s", bot_row.telegram_bot_id)
+
+        bot_row.status = BotStatus.DELETED
+        await session.commit()
+
+        await callback.answer("O'chirildi.")
+        await callback.message.edit_text(
+            f"🗑 @{bot_row.username} o'chirildi.\n\n"
+            f"Yangi bot qo'shish uchun \"{MENU_NEW_BOT}\" tugmasini bosing."
+        )
 
     # --- 💳 To'lov cheki yuborish (haftalik yoki oylik hosting) ---
 
@@ -701,11 +770,16 @@ def build_momo_dispatcher() -> Dispatcher:
         await callback.answer()
 
     @router.callback_query(F.data.startswith("hosting_period:"))
-    async def on_hosting_period_chosen(callback: CallbackQuery, state: FSMContext) -> None:
+    async def on_hosting_period_chosen(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
         billing_period = BillingPeriod(callback.data.split(":", 1)[1])
         await state.update_data(hosting_billing_period=billing_period.value)
         await state.set_state(PaymentStates.waiting_for_hosting_receipt)
-        await callback.message.edit_text("To'lov chekining skrinshotini shu yerga RASM qilib yuboring:")
+
+        settings_row = await get_platform_settings(session)
+        await callback.message.edit_text(
+            f"{format_payment_details(settings_row)}\n\n"
+            "To'lovni amalga oshirgach, chekning skrinshotini shu yerga RASM qilib yuboring:"
+        )
         await callback.answer()
 
     @router.message(PaymentStates.waiting_for_hosting_receipt, F.photo)
@@ -814,11 +888,16 @@ def build_momo_dispatcher() -> Dispatcher:
         await callback.answer()
 
     @router.callback_query(PaymentStates.waiting_for_upgrade_tariff, F.data.startswith("upg_tariff_pick:"))
-    async def on_upg_tariff_pick(callback: CallbackQuery, state: FSMContext) -> None:
+    async def on_upg_tariff_pick(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
         code = callback.data.split(":", 1)[1]
         await state.update_data(target_tariff_code=code)
         await state.set_state(PaymentStates.waiting_for_upgrade_receipt)
-        await callback.message.edit_text("Endi to'lov chekining skrinshotini shu yerga RASM qilib yuboring:")
+
+        settings_row = await get_platform_settings(session)
+        await callback.message.edit_text(
+            f"{format_payment_details(settings_row)}\n\n"
+            "To'lovni amalga oshirgach, chekning skrinshotini shu yerga RASM qilib yuboring:"
+        )
         await callback.answer()
 
     @router.message(PaymentStates.waiting_for_upgrade_receipt, F.photo)
@@ -1378,6 +1457,72 @@ def build_momo_dispatcher() -> Dispatcher:
         kb.adjust(1)
         await callback.message.edit_text(text, reply_markup=kb.as_markup())
         await callback.answer()
+
+    # -----------------------------------------------------------------
+    # Momo Admin: 💳 To'lov rekvizitlari (mijoz qayerga to'lashini ko'rsatadi)
+    # -----------------------------------------------------------------
+
+    def _payment_details_keyboard() -> InlineKeyboardMarkup:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✏️ Tahrirlash", callback_data="payment_details_edit")
+        kb.button(text="⬅️ Orqaga", callback_data="admin_menu:back")
+        kb.adjust(1)
+        return kb.as_markup()
+
+    @router.callback_query(F.data == "admin_menu:payment_details")
+    async def on_admin_menu_payment_details(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+        await state.clear()
+
+        settings_row = await get_platform_settings(session)
+        text = "💳 To'lov rekvizitlari (mijozlarga shu ma'lumot ko'rsatiladi)\n\n" + format_payment_details(settings_row)
+        await callback.message.edit_text(text, reply_markup=_payment_details_keyboard())
+        await callback.answer()
+
+    @router.callback_query(F.data == "payment_details_edit")
+    async def on_payment_details_edit_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+        if await _require_momo_admin(callback, session) is None:
+            return
+        await state.clear()
+        await state.set_state(AdminPaymentDetailsStates.waiting_for_card_number)
+        await callback.message.answer("Karta raqamini kiriting (masalan: 8600 1234 5678 9012):")
+        await callback.answer()
+
+    @router.message(AdminPaymentDetailsStates.waiting_for_card_number)
+    async def on_card_number_entered(message: Message, state: FSMContext) -> None:
+        await state.update_data(card_number=(message.text or "").strip())
+        await state.set_state(AdminPaymentDetailsStates.waiting_for_card_holder)
+        await message.answer("Karta egasining F.I.Sh. kiriting:")
+
+    @router.message(AdminPaymentDetailsStates.waiting_for_card_holder)
+    async def on_card_holder_entered(message: Message, state: FSMContext) -> None:
+        await state.update_data(card_holder=(message.text or "").strip())
+        await state.set_state(AdminPaymentDetailsStates.waiting_for_instructions)
+        await message.answer(
+            "Qo'shimcha ko'rsatma kiriting (masalan bank nomi), yoki /otkazish bilan o'tkazib yuboring:"
+        )
+
+    @router.message(AdminPaymentDetailsStates.waiting_for_instructions, Command("otkazish"))
+    async def on_instructions_skipped(message: Message, state: FSMContext, session: AsyncSession) -> None:
+        await _finish_payment_details(message, state, session, instructions=None)
+
+    @router.message(AdminPaymentDetailsStates.waiting_for_instructions)
+    async def on_instructions_entered(message: Message, state: FSMContext, session: AsyncSession) -> None:
+        await _finish_payment_details(message, state, session, instructions=(message.text or "").strip())
+
+    async def _finish_payment_details(
+        message: Message, state: FSMContext, session: AsyncSession, instructions: str | None
+    ) -> None:
+        data = await state.get_data()
+        await state.clear()
+        settings_row = await update_payment_details(
+            session, data.get("card_number"), data.get("card_holder"), instructions
+        )
+        await message.answer(
+            "✅ To'lov rekvizitlari yangilandi.\n\n" + format_payment_details(settings_row),
+            reply_markup=_payment_details_keyboard(),
+        )
 
     # -----------------------------------------------------------------
 
