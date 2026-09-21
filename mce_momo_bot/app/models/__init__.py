@@ -12,6 +12,7 @@ from app.models.custom import CustomButton, CustomCommand
 from app.models.game import GameInstance, GamePlayer, GameSettings
 from app.models.module import Module
 from app.models.payment import HostingPayment, Payment, TariffUpgrade
+from app.models.platform_settings import PlatformSettings
 from app.models.premium_subscription import PremiumSubscriber, PremiumSubscriptionPayment
 from app.models.sub_admin import BotSubAdmin
 from app.models.tariff import Tariff
@@ -33,6 +34,7 @@ __all__ = [
     "HostingPayment",
     "TariffUpgrade",
     "Payment",
+    "PlatformSettings",
     "Module",
     "GameSettings",
     "GameInstance",
