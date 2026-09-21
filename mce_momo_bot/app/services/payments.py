@@ -14,6 +14,7 @@ approve_payment / reject_payment — Momo Admin chekni ko'rib chiqqanda:
 from __future__ import annotations
 
 import datetime
+import logging
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +25,11 @@ from app.models.bot import BotTariff
 from app.models.payment import HostingPayment, Payment, TariffUpgrade
 from app.models.tariff import Tariff
 from app.models.user import User
+from app.services.crypto import decrypt_token
 from app.services.limits import calculate_hosting_price, get_owner_bot_limit, get_tariff_by_code, get_unique_user_count
+from app.services.telegram import set_webhook
+
+logger = logging.getLogger(__name__)
 
 
 class PaymentNotFoundError(Exception):
@@ -204,6 +209,24 @@ async def _require_momo_admin(session: AsyncSession, reviewer_telegram_id: int) 
     return user
 
 
+async def _restore_bot_webhook(bot_row: BotModel) -> None:
+    """
+    Bot PAUSED/SUSPENDED holatidan ACTIVE'ga qaytarilganda webhookni qayta
+    o'rnatadi. MUHIM: bu avval yo'q edi — natijada bot PAUSED bo'lgach
+    (webhook ATAYLAB o'chirilgan, hosting_check.py) va keyin qayta
+    to'lansa ham, webhook hech qachon qaytadan o'rnatilmasdi, bot
+    "faol" deb ko'rsatilsa ham amalda javob bermay qolardi. (Bundan
+    tashqari Telegram uzoq vaqt xato qaytargan webhook'larni ham o'zi
+    avtomatik o'chirib qo'yishi mumkin — bu ham shu funksiya bilan
+    tuzatiladi, chunki har reaktivatsiyada qayta o'rnatiladi.)
+    """
+    try:
+        token = decrypt_token(bot_row.token_encrypted)
+        await set_webhook(token, bot_row.telegram_bot_id)
+    except Exception:
+        logger.exception("Webhookni qayta o'rnatishda xato: bot_id=%s", bot_row.telegram_bot_id)
+
+
 async def _reactivate_suspended_bots_if_within_limit(session: AsyncSession, owner_id: int) -> None:
     """Tarif oshirilgach, mijozning yangi (kattaroq) bot limitiga sig'adigan
     SUSPENDED botlarini qayta ACTIVE qiladi — eng oldin yaratilganlariga
@@ -232,6 +255,7 @@ async def _reactivate_suspended_bots_if_within_limit(session: AsyncSession, owne
     )
     for bot_row in suspended_result.scalars().all():
         bot_row.status = BotStatus.ACTIVE
+        await _restore_bot_webhook(bot_row)
 
 
 async def approve_payment(session: AsyncSession, payment_id: int, reviewer_telegram_id: int) -> Payment:
@@ -256,6 +280,7 @@ async def approve_payment(session: AsyncSession, payment_id: int, reviewer_teleg
 
         if bot_row.status == BotStatus.PAUSED:
             bot_row.status = BotStatus.ACTIVE  # hosting to'lanmagani uchun to'xtatilgan edi (TZ 6.5)
+            await _restore_bot_webhook(bot_row)
 
     elif payment.kind == PaymentKind.TARIFF_UPGRADE:
         tu_result = await session.execute(
@@ -294,6 +319,7 @@ async def approve_payment(session: AsyncSession, payment_id: int, reviewer_teleg
 
         if bot_row.status == BotStatus.SUSPENDED:
             bot_row.status = BotStatus.ACTIVE  # tarif tugab Start'ga tushirilgan edi (TZ 6.4)
+            await _restore_bot_webhook(bot_row)
 
         # Mijozning BOSHQA SUSPENDED botlari ham (agar yangi limit ularga
         # yetsa) qayta faollashtiriladi — yagona bot emas, butun hisob
