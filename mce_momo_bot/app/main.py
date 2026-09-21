@@ -21,6 +21,7 @@ from fastapi import FastAPI, Request
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.dispatcher.router import BotNotActiveError, BotNotFoundError, dispatch_update
+from app.services.error_reporting import report_bot_error
 from app.momo_bot import build_momo_dispatcher
 from app.services.scheduler import shutdown_scheduler, start_scheduler
 from app.api.registration import router as registration_router
@@ -158,6 +159,18 @@ async def telegram_webhook(bot_id: int, request: Request) -> dict:
             logger.warning("Noma'lum bot_id uchun update keldi: %s", bot_id)
         except BotNotActiveError as exc:
             logger.info("Faol bo'lmagan bot uchun update keldi: %s (%s)", bot_id, exc)
+        except Exception as exc:
+            # KUTILMAGAN dasturiy xatolik (masalan yetishmayotgan fayl, kod
+            # xatosi) — avval bu faqat Railway logida "sukut" bo'lib qolib
+            # ketardi. Endi bot egasiga va Momo Adminlarga avtomatik xabar
+            # boradi (spam bo'lmasligi uchun bot boshiga 15 daqiqada bir marta).
+            if momo_aiogram_bot is not None:
+                await report_bot_error(session, momo_aiogram_bot, bot_id, exc)
+            else:
+                logger.exception(
+                    "Mijoz botida kutilmagan xatolik (Momo bot sozlanmagan, xabar yuborilmadi): bot_id=%s",
+                    bot_id,
+                )
 
     # Telegramga har doim 200 qaytariladi — aks holda webhook qayta yuborishga urinadi.
     return {"ok": True}
