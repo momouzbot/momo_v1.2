@@ -8,16 +8,17 @@ integratsiyalar (masalan admin panel, boshqa xizmatlar) uchun.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.schemas import RegisterBotRequest, RegisterBotResponse
+from app.api.security import require_api_key
 from app.database import AsyncSessionLocal
 from app.models.base import TariffCode
 from app.services.limits import LimitExceededError
 from app.services.registration import AlreadyRegisteredError, register_bot_for_owner
 from app.services.telegram import InvalidTokenError
 
-router = APIRouter(prefix="/api/registration", tags=["registration"])
+router = APIRouter(prefix="/api/registration", tags=["registration"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("/register", response_model=RegisterBotResponse)

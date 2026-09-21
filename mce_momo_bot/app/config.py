@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # (orqaga muvofiqlik uchun), lekin ishlab chiqarishda to'ldirish tavsiya etiladi.
     admin_pin: str = ""
 
+    # Ichki boshqaruv API'lari (/api/admin, /api/payments, /api/registration)
+    # uchun umumiy maxfiy kalit. Har bir so'rov `X-API-Key` sarlavhasida shu
+    # qiymatni yuborishi shart, aks holda 401/503 bilan rad etiladi. Railway
+    # Variables'da API_SECRET_KEY sifatida saqlanadi, kodda hardcode qilinmaydi.
+    # /api/external-bots bunga kirmaydi — u har bot uchun alohida api_key
+    # bilan allaqachon himoyalangan.
+    api_secret_key: str = ""
+
     host: str = "0.0.0.0"
     port: int = 8000
 

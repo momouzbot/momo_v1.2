@@ -7,15 +7,16 @@ modullarni yoqish/o'chirish funksiyasi.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.api.security import require_api_key
 from app.database import AsyncSessionLocal
 from app.models.base import ModuleType
 from app.models.user import User
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_api_key)])
 
 
 class ModuleResponse(BaseModel):

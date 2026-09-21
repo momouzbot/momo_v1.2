@@ -27,13 +27,14 @@ from app.models.bot import Bot as BotModel
 logger = logging.getLogger(__name__)
 
 
-def _parse_channels(bot_row: BotModel) -> list[str]:
+def parse_force_subscribe_channels(bot_row: BotModel) -> list[str]:
     raw = bot_row.force_subscribe_channels
     if not raw:
         return []
     if isinstance(raw, list):
         return [c.strip() for c in raw if c.strip()]
-    # DB ustunida CSV-string sifatida kelishi ham mumkin
+    # DB ustunida CSV-string sifatida saqlanadi (haqiqiy ustun turi String,
+    # ro'yxat emas — quyida list ko'rinishi ham himoya uchun qo'llab-quvvatlanadi)
     return [c.strip() for c in str(raw).split(",") if c.strip()]
 
 
@@ -72,7 +73,7 @@ class ForceSubscribeMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        channels = _parse_channels(self.bot_row)
+        channels = parse_force_subscribe_channels(self.bot_row)
         if not channels:
             return await handler(event, data)
 
@@ -111,7 +112,7 @@ def register_force_subscribe(dp: Dispatcher, bot_row: BotModel) -> None:
 
     @dp.callback_query(lambda c: c.data == "force_sub_check")
     async def on_check(callback: CallbackQuery) -> None:
-        channels = _parse_channels(bot_row)
+        channels = parse_force_subscribe_channels(bot_row)
         missing = await _user_subscribed_to_all(callback.bot, channels, callback.from_user.id)
         if missing:
             await callback.answer("❌ Hali hamma kanallarga obuna bo'lmadingiz.", show_alert=True)

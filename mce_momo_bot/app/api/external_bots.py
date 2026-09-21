@@ -122,3 +122,4 @@ async def get_bot_status(bot_id: int, api_key: str = Query(...)) -> BotStatusRes
             ),
             should_serve=bot_row.status == BotStatus.ACTIVE,
         )
+
