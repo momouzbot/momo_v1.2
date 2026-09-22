@@ -48,6 +48,7 @@ from app.services.limits import (
     TARIFF_RANK,
     calculate_hosting_price,
     check_and_increment_edit_limit,
+    get_hosting_grace_days_remaining,
     get_owner_effective_bot_tariff,
     get_owner_effective_tariff,
     get_tariff_by_code,
@@ -328,7 +329,11 @@ async def _format_bot_detail(session: AsyncSession, bot_row: BotModel) -> tuple[
     status_label = _BOT_STATUS_LABEL.get(bot_row.status, bot_row.status.value)
 
     if payment_status is None:
-        payment_label = "❌ To'lanmagan"
+        grace_days = get_hosting_grace_days_remaining(bot_row, tariff)
+        if grace_days > 0:
+            payment_label = f"🎁 Bepul sinov davrida (yana {grace_days} kun)"
+        else:
+            payment_label = "❌ To'lanmagan"
     else:
         period_word = "Haftalik" if billing_period == BillingPeriod.WEEKLY else "Oylik"
         status_word = _HOSTING_STATUS_WORD[payment_status]
