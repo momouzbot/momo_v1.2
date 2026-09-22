@@ -21,6 +21,7 @@ from app.models.base import BotStatus, PaymentStatus
 from app.models.bot import Bot as BotModel
 from app.models.payment import HostingPayment
 from app.services.crypto import decrypt_token
+from app.services.limits import get_hosting_grace_days_remaining, get_owner_effective_tariff
 from app.services.payments import hosting_period_end
 from app.services.telegram import delete_webhook
 
@@ -31,6 +32,10 @@ async def check_hosting_payments() -> None:
     """
     Bugungi kunni qamrab oladigan tasdiqlangan (APPROVED) hosting to'lovi
     bo'lmagan barcha faol botlarni PAUSED holatiga o'tkazadi.
+
+    ISTISNO: Start tarifidagi mijozlar uchun bot yaratilgandan keyingi
+    birinchi FIRST_WEEK_FREE_DAYS kun (odatda 7 kun) hosting to'lovi
+    talab qilinmaydi — bot shu davrda PAUSED qilinmaydi.
     """
     today = datetime.date.today()
 
@@ -39,6 +44,10 @@ async def check_hosting_payments() -> None:
         active_bots = result.scalars().all()
 
         for bot_row in active_bots:
+            effective_tariff = await get_owner_effective_tariff(session, bot_row.owner_id)
+            if get_hosting_grace_days_remaining(bot_row, effective_tariff) > 0:
+                continue  # Start tarifida bepul sinov davri hali tugamagan
+
             hp_result = await session.execute(
                 select(HostingPayment).where(
                     HostingPayment.bot_id == bot_row.id,
