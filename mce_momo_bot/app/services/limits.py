@@ -19,6 +19,28 @@ from app.models.tariff import Tariff
 
 TASHKENT_TZ = pytz.timezone("Asia/Tashkent")
 
+# Start tarifidagi mijozlar uchun bot yaratilgandan keyingi birinchi shuncha
+# kun hosting to'lovi talab qilinmaydi (mijoz talabi: "1-hafta hosting
+# to'lovi ham bepul bo'lishi kerak").
+FIRST_WEEK_FREE_DAYS = 7
+
+
+def get_hosting_grace_days_remaining(bot_row: BotModel, effective_tariff: Tariff) -> int:
+    """
+    Start tarifidagi mijozlar uchun bot yaratilgandan keyingi FIRST_WEEK_FREE_DAYS
+    kun ichida hosting to'lovi talab qilinmaydi — qolgan kunlar sonini qaytaradi
+    (0 = muddat tugagan yoki mijoz Start tarifida emas, demak imtiyoz yo'q).
+
+    MUHIM: bu faqat Start tarifiga tegishli — Standard/Premium tarifidagi
+    mijozlar uchun bunday bepul davr yo'q (ular allaqachon tarif narxini
+    to'lab, o'z botlarini ulashgan).
+    """
+    if effective_tariff.code != TariffCode.START:
+        return 0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    age_days = (now - bot_row.created_at).days
+    return max(0, FIRST_WEEK_FREE_DAYS - age_days)
+
 
 class LimitExceededError(Exception):
     pass
