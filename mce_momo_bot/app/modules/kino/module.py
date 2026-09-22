@@ -116,6 +116,19 @@ def _admin_panel_keyboard() -> InlineKeyboardBuilder:
     return builder
 
 
+def _admin_panel_text() -> str:
+    return (
+        "🛠 Boshqaruv paneli\n\n"
+        "Pastdagi tugmalar orqali asosiy amallarni bajarasiz. Bulardan tashqari "
+        "quyidagi buyruqlar ham mavjud:\n\n"
+        "📡 /kanallar — majburiy obuna kanallarini boshqarish\n"
+        "📨 /xabar — barcha foydalanuvchilarga ommaviy xabar yuborish\n"
+        "⭐ /premium_narx — Premium obuna narxini sozlash\n"
+        "💳 /premium_tolovlar — kutilayotgan Premium to'lovlar\n"
+        "👥 /moderatorlar — yordamchi adminlar (sub-admin) tayinlash"
+    )
+
+
 class KinoModule(BaseModule):
     def register_handlers(self, dp: Dispatcher) -> None:
         router = Router(name=f"kino_{self.bot_row.id}")
@@ -134,17 +147,14 @@ class KinoModule(BaseModule):
                 "Top-10 kinolarni ko'rish: /top"
             )
             if await is_bot_owner_or_sub_admin(session, bot_row.id, message.from_user.id):
-                await message.answer(
-                    "🛠 Siz botning egasisiz. Boshqaruv paneli:",
-                    reply_markup=_admin_panel_keyboard().as_markup(),
-                )
+                await message.answer(_admin_panel_text(), reply_markup=_admin_panel_keyboard().as_markup())
 
-        @router.message(Command("panel"))
+        @router.message(Command("panel", "admin", "boshqaruv"))
         async def cmd_panel(message: Message, session: AsyncSession) -> None:
             if not await is_bot_owner_or_sub_admin(session, bot_row.id, message.from_user.id):
                 await message.answer("⛔ Bu buyruq faqat bot egasi uchun.")
                 return
-            await message.answer("🛠 Boshqaruv paneli:", reply_markup=_admin_panel_keyboard().as_markup())
+            await message.answer(_admin_panel_text(), reply_markup=_admin_panel_keyboard().as_markup())
 
         @router.message(Command("top"))
         async def cmd_top(message: Message, session: AsyncSession) -> None:
